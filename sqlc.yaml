@@ -1,22 +1,28 @@
 version: "2"
 sql:
   - engine: sqlite
-    schema: internal/database/migrations
-    queries: internal/database/queries
+    schema: internal/database/sqlite/migrations
+    queries:
+      - internal/database/queries/catalog.sql
+      - internal/database/queries/delete_catalog.sql
     gen:
       go:
         package: dbsql
-        out: internal/database/dbsql
+        out: internal/database/sqlite/dbsql
   - engine: postgresql
     schema: internal/database/postgres/migrations
-    queries: internal/database/postgres/queries
+    queries:
+      - internal/database/queries/catalog.sql
+      - internal/database/queries/delete_catalog.sql
     gen:
       go:
         package: pgsql
         out: internal/database/postgres/pgsql
   - engine: mysql
     schema: internal/database/mysql/migrations
-    queries: internal/database/mysql/queries
+    queries:
+      - internal/database/queries/catalog.sql
+      - internal/database/queries/delete_catalog_mysql.sql
     gen:
       go:
         package: mysqlsql

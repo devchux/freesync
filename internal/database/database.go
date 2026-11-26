@@ -43,14 +43,14 @@ func ParseType(value string) (string, error) {
 	}
 }
 
-//go:embed migrations/*.sql postgres/migrations/*.sql mysql/migrations/*.sql
+//go:embed sqlite/migrations/*.sql postgres/migrations/*.sql mysql/migrations/*.sql
 var migrations embed.FS
 
 // Open connects to the selected database and applies pending migrations.
 func Open(ctx context.Context, cfg Config) (*sql.DB, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	driver, dialect, dir := "sqlite", goose.DialectSQLite3, "migrations"
+	driver, dialect, dir := "sqlite", goose.DialectSQLite3, "sqlite/migrations"
 	dsn := cfg.Address
 	switch cfg.Type {
 	case SQLite:

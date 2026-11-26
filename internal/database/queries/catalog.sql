@@ -1,6 +1,3 @@
--- name: DeleteCatalogEntries :exec
-DELETE FROM catalog_entries WHERE folder = ?;
-
 -- name: InsertCatalogEntry :exec
 INSERT INTO catalog_entries (folder, path, directory, size)
-VALUES (?, ?, ?, ?);
+VALUES (sqlc.arg(folder), sqlc.arg(path), sqlc.arg(directory), sqlc.arg(size));

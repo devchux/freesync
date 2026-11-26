@@ -9,15 +9,6 @@ import (
 	"context"
 )
 
-const deleteCatalogEntries = `-- name: DeleteCatalogEntries :exec
-DELETE FROM catalog_entries WHERE folder_hash = UNHEX(SHA2(?, 256))
-`
-
-func (q *Queries) DeleteCatalogEntries(ctx context.Context, folder string) error {
-	_, err := q.db.ExecContext(ctx, deleteCatalogEntries, folder)
-	return err
-}
-
 const insertCatalogEntry = `-- name: InsertCatalogEntry :exec
 INSERT INTO catalog_entries (folder, path, directory, size)
 VALUES (?, ?, ?, ?)

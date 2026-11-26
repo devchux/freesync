@@ -5,9 +5,9 @@ import (
 	"database/sql"
 
 	"github.com/devchux/freesync/internal/database"
-	"github.com/devchux/freesync/internal/database/dbsql"
 	"github.com/devchux/freesync/internal/database/mysql/mysqlsql"
 	"github.com/devchux/freesync/internal/database/postgres/pgsql"
+	"github.com/devchux/freesync/internal/database/sqlite/dbsql"
 )
 
 type CatalogEntry struct {

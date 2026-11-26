@@ -9,18 +9,9 @@ import (
 	"context"
 )
 
-const deleteCatalogEntries = `-- name: DeleteCatalogEntries :exec
-DELETE FROM catalog_entries WHERE folder = ?
-`
-
-func (q *Queries) DeleteCatalogEntries(ctx context.Context, folder string) error {
-	_, err := q.db.ExecContext(ctx, deleteCatalogEntries, folder)
-	return err
-}
-
 const insertCatalogEntry = `-- name: InsertCatalogEntry :exec
 INSERT INTO catalog_entries (folder, path, directory, size)
-VALUES (?, ?, ?, ?)
+VALUES (?1, ?2, ?3, ?4)
 `
 
 type InsertCatalogEntryParams struct {

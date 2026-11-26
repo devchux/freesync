@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -21,30 +20,30 @@ func main() {
 	}
 }
 
-func run(args []string) error {
-	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
-		fmt.Println("Usage: freesync daemon --folder PATH")
-		return nil
-	}
-	if len(args) == 0 || args[0] != "daemon" {
-		return errors.New("usage: freesync daemon --folder PATH")
-	}
-	flags := flag.NewFlagSet("daemon", flag.ContinueOnError)
-	folder := flags.String("folder", "", "folder to scan")
-	dbPath := flags.String("db", "", "SQLite database file (defaults to freesync/freesync.sqlite under the user config directory)")
-	port := flags.Int("port", 8384, "loopback HTTP port")
-	interval := flags.Duration("scan-interval", 30*time.Second, "time between folder scans")
-	if err := flags.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return err
-	}
-	if *folder == "" || *port < 1 || *port > 65535 || *interval <= 0 || flags.NArg() != 0 {
-		return errors.New("provide --folder PATH, a valid port, and a positive scan interval")
-	}
-
+func start(cfg settings, port int, interval time.Duration, save func() error) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return daemon.Run(ctx, *folder, *port, *interval, *dbPath)
+	return daemon.Run(ctx, cfg.Folder, port, interval, cfg.Database, save)
+}
+
+const (
+	usage           = "Usage: freesync [setup | daemon --folder PATH [--db-type TYPE] [--db ADDRESS]]"
+	defaultPort     = 8384
+	defaultInterval = 30 * time.Second
+)
+
+func run(args []string) error {
+	switch {
+	case len(args) == 0:
+		return runSetup(false)
+	case len(args) == 1 && args[0] == "setup":
+		return runSetup(true)
+	case len(args) == 1 && (args[0] == "--help" || args[0] == "-h"):
+		fmt.Println(usage)
+		return nil
+	case args[0] == "daemon":
+		return runDaemon(args[1:])
+	default:
+		return errors.New(usage)
+	}
 }

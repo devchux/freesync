@@ -113,7 +113,7 @@ func (c *catalog) scan(ctx context.Context, store *service.Catalog) error {
 }
 
 // Run scans a local folder and serves its inventory over loopback.
-func Run(ctx context.Context, folder string, port int, interval time.Duration, dbPath string) error {
+func Run(ctx context.Context, folder string, port int, interval time.Duration, dbConfig database.Config, saveSettings func() error) error {
 	root, err := filepath.Abs(folder)
 	if err != nil {
 		return err
@@ -122,16 +122,22 @@ func Run(ctx context.Context, folder string, port int, interval time.Duration, d
 	if err != nil {
 		return err
 	}
-	db, err := database.Open(ctx, dbPath)
+	db, err := database.Open(ctx, dbConfig)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	store := service.NewCatalog(db)
+	store := service.NewCatalog(db, dbConfig.Type)
 
 	c := NewCatalog(status{Folder: root}, nil)
 	if err := c.scan(ctx, store); err != nil {
 		return fmt.Errorf("initial scan: %w", err)
+	}
+
+	if saveSettings != nil {
+		if err := saveSettings(); err != nil {
+			return fmt.Errorf("save settings: %w", err)
+		}
 	}
 
 	server, err := http.Listen(port, route.New(c.snapshotStatus, c.snapshotFiles))

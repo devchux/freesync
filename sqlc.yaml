@@ -7,3 +7,17 @@ sql:
       go:
         package: dbsql
         out: internal/database/dbsql
+  - engine: postgresql
+    schema: internal/database/postgres/migrations
+    queries: internal/database/postgres/queries
+    gen:
+      go:
+        package: pgsql
+        out: internal/database/postgres/pgsql
+  - engine: mysql
+    schema: internal/database/mysql/migrations
+    queries: internal/database/mysql/queries
+    gen:
+      go:
+        package: mysqlsql
+        out: internal/database/mysql/mysqlsql

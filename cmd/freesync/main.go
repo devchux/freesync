@@ -31,6 +31,7 @@ func run(args []string) error {
 	}
 	flags := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	folder := flags.String("folder", "", "folder to scan")
+	dbPath := flags.String("db", "", "SQLite database file (defaults to freesync/freesync.sqlite under the user config directory)")
 	port := flags.Int("port", 8384, "loopback HTTP port")
 	interval := flags.Duration("scan-interval", 30*time.Second, "time between folder scans")
 	if err := flags.Parse(args[1:]); err != nil {
@@ -45,5 +46,5 @@ func run(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return daemon.Run(ctx, *folder, *port, *interval)
+	return daemon.Run(ctx, *folder, *port, *interval, *dbPath)
 }

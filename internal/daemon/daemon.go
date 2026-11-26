@@ -10,15 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/devchux/freesync/internal/database"
 	"github.com/devchux/freesync/internal/http"
 	"github.com/devchux/freesync/internal/route"
+	"github.com/devchux/freesync/internal/service"
 )
-
-type entry struct {
-	Path      string `json:"path"`
-	Directory bool   `json:"directory"`
-	Size      int64  `json:"size"`
-}
 
 type status struct {
 	Folder    string    `json:"folder"`
@@ -28,14 +24,14 @@ type status struct {
 }
 
 type catalog struct {
-	mu      *sync.RWMutex
+	mu      sync.RWMutex
 	status  status
-	entries []entry
+	entries []service.CatalogEntry
 }
 
 func NewCatalog(
 	status status,
-	entries []entry) *catalog {
+	entries []service.CatalogEntry) *catalog {
 	var ctg *catalog
 	ctg = &catalog{
 		status:  status,
@@ -51,15 +47,15 @@ func (c *catalog) snapshotStatus() status {
 	return c.status
 }
 
-func (c *catalog) snapshotFiles() []entry {
+func (c *catalog) snapshotFiles() []service.CatalogEntry {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.entries
 }
 
-func (c *catalog) scan(ctx context.Context) error {
+func (c *catalog) scan(ctx context.Context, store *service.Catalog) error {
 	root := c.status.Folder
-	entries := make([]entry, 0)
+	entries := make([]service.CatalogEntry, 0)
 	count := 0
 	err := filepath.WalkDir(root, func(path string, item fs.DirEntry, err error) error {
 		if err != nil {
@@ -88,7 +84,7 @@ func (c *catalog) scan(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		file := entry{Path: filepath.ToSlash(relative), Directory: info.IsDir()}
+		file := service.CatalogEntry{Path: filepath.ToSlash(relative), Directory: info.IsDir()}
 		if !file.Directory {
 			file.Size = info.Size()
 			count++
@@ -96,6 +92,12 @@ func (c *catalog) scan(ctx context.Context) error {
 		entries = append(entries, file)
 		return nil
 	})
+
+	if err == nil {
+		if saveErr := store.ReplaceEntries(ctx, root, entries); saveErr != nil {
+			err = fmt.Errorf("persist catalog: %w", saveErr)
+		}
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -111,7 +113,7 @@ func (c *catalog) scan(ctx context.Context) error {
 }
 
 // Run scans a local folder and serves its inventory over loopback.
-func Run(ctx context.Context, folder string, port int, interval time.Duration) error {
+func Run(ctx context.Context, folder string, port int, interval time.Duration, dbPath string) error {
 	root, err := filepath.Abs(folder)
 	if err != nil {
 		return err
@@ -120,8 +122,15 @@ func Run(ctx context.Context, folder string, port int, interval time.Duration) e
 	if err != nil {
 		return err
 	}
+	db, err := database.Open(ctx, dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	store := service.NewCatalog(db)
+
 	c := NewCatalog(status{Folder: root}, nil)
-	if err := c.scan(ctx); err != nil {
+	if err := c.scan(ctx, store); err != nil {
 		return fmt.Errorf("initial scan: %w", err)
 	}
 
@@ -145,7 +154,7 @@ func Run(ctx context.Context, folder string, port int, interval time.Duration) e
 			case <-scanCtx.Done():
 				return
 			case <-ticker.C:
-				if err := c.scan(scanCtx); err != nil && scanCtx.Err() == nil {
+				if err := c.scan(scanCtx, store); err != nil && scanCtx.Err() == nil {
 					log.Printf("Folder scan: %v", err)
 				}
 			}

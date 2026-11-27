@@ -124,3 +124,104 @@ func TestStorageDriveReads(t *testing.T) {
 		t.Fatalf("range at EOF = %d bytes, %v", n, err)
 	}
 }
+
+type conditionalMemoryBackend struct {
+	memoryBackend
+	observedRevision string
+	currentRevision  string
+}
+
+func (b *conditionalMemoryBackend) Stat(ctx context.Context, key string) (storage.FileInfo, error) {
+	file, err := b.memoryBackend.Stat(ctx, key)
+	file.Revision = b.observedRevision
+	return file, err
+}
+
+func (b *conditionalMemoryBackend) PutIfUnchanged(ctx context.Context, key, revision, _ string, body io.ReadSeeker) error {
+	_, exists := b.memoryBackend[key]
+	if (revision == "" && exists) || (revision != "" && (!exists || revision != b.currentRevision)) {
+		return storage.ErrFileChanged
+	}
+	return b.memoryBackend.Put(ctx, key, body)
+}
+
+func TestStorageConditionalWritePreservesRemoteEdits(t *testing.T) {
+	ctx := context.Background()
+	backend := &conditionalMemoryBackend{
+		memoryBackend:    memoryBackend{"file": "remote edit"},
+		observedRevision: "older",
+		currentRevision:  "newer",
+	}
+	store := &Storage{backend: backend}
+
+	if err := store.New(ctx, "file", strings.NewReader("duplicate")); !errors.Is(err, ErrObjectExists) {
+		t.Fatalf("create existing file returned %v", err)
+	}
+	if err := store.Update(ctx, "file", strings.NewReader("local edit")); !errors.Is(err, storage.ErrFileChanged) {
+		t.Fatalf("update stale file returned %v", err)
+	}
+	if content := backend.memoryBackend["file"]; content != "remote edit" {
+		t.Fatalf("conflict overwrote remote content with %q", content)
+	}
+
+	backend.observedRevision = backend.currentRevision
+	if err := store.Update(ctx, "file", strings.NewReader("local edit")); err != nil {
+		t.Fatal(err)
+	}
+	if content := backend.memoryBackend["file"]; content != "local edit" {
+		t.Fatalf("matching revision did not update content: %q", content)
+	}
+}
+
+type replayBackend struct {
+	memoryBackend
+	revision string
+	commitID string
+	puts     int
+}
+
+func (b *replayBackend) Stat(ctx context.Context, key string) (storage.FileInfo, error) {
+	file, err := b.memoryBackend.Stat(ctx, key)
+	file.Revision, file.CommitID = b.revision, b.commitID
+	return file, err
+}
+
+func (b *replayBackend) PutIfUnchanged(ctx context.Context, key, revision, commitID string, body io.ReadSeeker) error {
+	b.puts++
+	if b.revision != revision {
+		return storage.ErrFileChanged
+	}
+	if err := b.memoryBackend.Put(ctx, key, body); err != nil {
+		return err
+	}
+	b.commitID, b.revision = commitID, "next"
+	return nil
+}
+
+func (b *replayBackend) DeleteIfUnchanged(ctx context.Context, key, revision string) error {
+	if b.revision != revision {
+		return storage.ErrFileChanged
+	}
+	return b.memoryBackend.Delete(ctx, key)
+}
+
+func TestReplayRecognizesItsOwnCommittedUpload(t *testing.T) {
+	ctx := context.Background()
+	backend := &replayBackend{memoryBackend: memoryBackend{"file": "original"}, revision: "initial"}
+	store := &Storage{backend: backend}
+	if err := store.CommitWrite(ctx, "file", "initial", "job-1", false, strings.NewReader("saved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitWrite(ctx, "file", "initial", "job-1", true, strings.NewReader("saved")); err != nil {
+		t.Fatal(err)
+	}
+	if backend.puts != 1 {
+		t.Fatalf("replay issued %d uploads", backend.puts)
+	}
+	if err := store.CommitDelete(ctx, "file", "initial"); !errors.Is(err, storage.ErrFileChanged) {
+		t.Fatalf("deleting newer revision returned %v", err)
+	}
+	if backend.memoryBackend["file"] != "saved" {
+		t.Fatal("stale delete removed the newer file")
+	}
+}

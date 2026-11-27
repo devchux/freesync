@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 )
 
 // S3 stores objects in an existing bucket.
@@ -35,13 +36,41 @@ func NewS3(ctx context.Context, bucket string) (*S3, error) {
 
 // Put uploads an object using a seekable body so the SDK can retry the request.
 func (s *S3) Put(ctx context.Context, key string, body io.ReadSeeker) error {
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-		Body:   body,
-	})
-	if err != nil {
-		return fmt.Errorf("put S3 object %q: %w", key, err)
+	return s.put(ctx, &s3.PutObjectInput{Key: &key, Body: body})
+}
+
+// PutIfUnchanged creates an object for an empty revision or replaces the matching revision.
+func (s *S3) PutIfUnchanged(ctx context.Context, key, revision, commitID string, body io.ReadSeeker) error {
+	in := &s3.PutObjectInput{Key: &key, Body: body}
+	if commitID != "" {
+		in.Metadata = map[string]string{commitMetadata: commitID}
+	}
+	if revision == "" {
+		in.IfNoneMatch = aws.String("*")
+	} else {
+		in.IfMatch = &revision
+	}
+	err := s.put(ctx, in)
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "PreconditionFailed":
+			return errors.Join(ErrFileChanged, err)
+		case "EntityTooLarge":
+			return errors.Join(ErrUploadTooLarge, err)
+		case "NoSuchKey", "NotFound":
+			if revision != "" {
+				return errors.Join(ErrFileChanged, err)
+			}
+		}
+	}
+	return err
+}
+
+func (s *S3) put(ctx context.Context, in *s3.PutObjectInput) error {
+	in.Bucket = &s.bucket
+	if _, err := s.client.PutObject(ctx, in); err != nil {
+		return fmt.Errorf("put S3 object %q: %w", aws.ToString(in.Key), err)
 	}
 	return nil
 }
@@ -83,10 +112,24 @@ func (s *S3) List(ctx context.Context, prefix string) ([]Object, error) {
 
 // Delete removes the object at key.
 func (s *S3) Delete(ctx context.Context, key string) error {
-	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-	})
+	return s.delete(ctx, key, nil)
+}
+
+func (s *S3) DeleteIfUnchanged(ctx context.Context, key, revision string) error {
+	return s.delete(ctx, key, &revision)
+}
+
+func (s *S3) delete(ctx context.Context, key string, revision *string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &key, IfMatch: revision})
+	var apiErr smithy.APIError
+	if revision != nil && errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "NoSuchKey", "NotFound":
+			return nil
+		case "PreconditionFailed":
+			return errors.Join(ErrFileChanged, err)
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("delete S3 object %q: %w", key, err)
 	}

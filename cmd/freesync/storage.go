@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/devchux/freesync/internal/database"
 	"github.com/devchux/freesync/internal/drive"
 	"github.com/devchux/freesync/internal/service"
 	"golang.org/x/crypto/ssh"
@@ -23,15 +25,15 @@ type storageSettings struct {
 	PrivateKeyFile string `json:"privateKeyFile,omitempty"`
 }
 
-func runStorage(action string) error {
+func runStorage(action string, writable bool) error {
 	if action != "setup" && action != "list" && action != "mount" {
 		return errors.New(usage)
 	}
-	path, err := settingsPath()
+	settingsFile, err := settingsPath()
 	if err != nil {
 		return err
 	}
-	path = filepath.Join(filepath.Dir(path), "storage.json")
+	path := filepath.Join(filepath.Dir(settingsFile), "storage.json")
 	var cfg storageSettings
 	if action == "setup" {
 		cfg, err = promptStorage()
@@ -82,7 +84,18 @@ func runStorage(action string) error {
 		return err
 	}
 	if action == "mount" {
-		return drive.Mount(store)
+		var writeConfig *drive.WriteConfig
+		if writable {
+			dbConfig, err := mountDatabaseConfig(settingsFile)
+			if err != nil {
+				return err
+			}
+			writeConfig = &drive.WriteConfig{
+				SpoolDir: storageQueuePath(filepath.Dir(settingsFile), cfg.StorageConfig),
+				Database: dbConfig,
+			}
+		}
+		return drive.Mount(store, writeConfig)
 	}
 	objects, err := store.List(ctx, "")
 	if err != nil {
@@ -96,6 +109,25 @@ func runStorage(action string) error {
 	}
 	fmt.Fprintf(os.Stderr, "Connected to %s. Found %d objects. Run freesync storage list to view them.\n", cfg.Provider, len(objects))
 	return nil
+}
+
+func mountDatabaseConfig(settingsFile string) (database.Config, error) {
+	cfg, err := readSettings(settingsFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return database.Config{Type: database.SQLite}, nil
+	}
+	if err != nil {
+		return database.Config{}, fmt.Errorf("load database configuration for writable mount: %w", err)
+	}
+	return cfg.Database, nil
+}
+
+func storageQueuePath(configDir string, cfg service.StorageConfig) string {
+	identity := cfg.Provider + "\x00" + cfg.S3.Bucket
+	if cfg.Provider == service.StorageAzureBlob {
+		identity = cfg.Provider + "\x00" + strings.TrimSuffix(cfg.AzureBlob.ServiceURL, "/") + "\x00" + cfg.AzureBlob.Container
+	}
+	return filepath.Join(configDir, "writes", fmt.Sprintf("%x", sha256.Sum256([]byte(identity))))
 }
 
 func promptStorage() (storageSettings, error) {

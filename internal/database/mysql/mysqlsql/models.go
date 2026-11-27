@@ -16,3 +16,9 @@ type CatalogEntry struct {
 	FolderHash sql.NullString
 	PathHash   sql.NullString
 }
+
+type WriteQueueJob struct {
+	QueueID string
+	JobID   string
+	Payload []byte
+}

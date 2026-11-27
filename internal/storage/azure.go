@@ -8,8 +8,10 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 )
 
@@ -42,8 +44,35 @@ func NewAzureBlob(serviceURL, container string) (*AzureBlob, error) {
 
 // Put uploads a block blob, replacing an existing blob at the same key.
 func (a *AzureBlob) Put(ctx context.Context, key string, body io.ReadSeeker) error {
-	_, err := a.client.UploadStream(ctx, a.container, key, body, nil)
-	if err != nil {
+	return a.put(ctx, key, body, nil)
+}
+
+// PutIfUnchanged creates a blob for an empty revision or replaces the matching revision.
+func (a *AzureBlob) PutIfUnchanged(ctx context.Context, key, revision, commitID string, body io.ReadSeeker) error {
+	conditions := &blob.ModifiedAccessConditions{}
+	if revision == "" {
+		anyRevision := azcore.ETag("*")
+		conditions.IfNoneMatch = &anyRevision
+	} else {
+		expected := azcore.ETag(revision)
+		conditions.IfMatch = &expected
+	}
+	opts := &azblob.UploadStreamOptions{
+		AccessConditions: &blob.AccessConditions{ModifiedAccessConditions: conditions},
+	}
+	if commitID != "" {
+		opts.Metadata = map[string]*string{commitMetadata: &commitID}
+	}
+	err := a.put(ctx, key, body, opts)
+	if bloberror.HasCode(err, bloberror.ConditionNotMet, bloberror.BlobAlreadyExists) ||
+		(revision != "" && bloberror.HasCode(err, bloberror.BlobNotFound)) {
+		return errors.Join(ErrFileChanged, err)
+	}
+	return err
+}
+
+func (a *AzureBlob) put(ctx context.Context, key string, body io.ReadSeeker, opts *azblob.UploadStreamOptions) error {
+	if _, err := a.client.UploadStream(ctx, a.container, key, body, opts); err != nil {
 		return fmt.Errorf("put Azure blob %q: %w", key, err)
 	}
 	return nil
@@ -91,9 +120,23 @@ func (a *AzureBlob) List(ctx context.Context, prefix string) ([]Object, error) {
 
 // Delete removes the blob at key.
 func (a *AzureBlob) Delete(ctx context.Context, key string) error {
-	_, err := a.client.DeleteBlob(ctx, a.container, key, nil)
+	return a.delete(ctx, key, nil)
+}
+
+func (a *AzureBlob) DeleteIfUnchanged(ctx context.Context, key, revision string) error {
+	tag := azcore.ETag(revision)
+	return a.delete(ctx, key, &azblob.DeleteBlobOptions{
+		AccessConditions: &blob.AccessConditions{ModifiedAccessConditions: &blob.ModifiedAccessConditions{IfMatch: &tag}},
+	})
+}
+
+func (a *AzureBlob) delete(ctx context.Context, key string, opts *azblob.DeleteBlobOptions) error {
+	_, err := a.client.DeleteBlob(ctx, a.container, key, opts)
 	if bloberror.HasCode(err, bloberror.BlobNotFound) {
 		return nil
+	}
+	if opts != nil && bloberror.HasCode(err, bloberror.ConditionNotMet) {
+		return errors.Join(ErrFileChanged, err)
 	}
 	if err != nil {
 		return fmt.Errorf("delete Azure blob %q: %w", key, err)

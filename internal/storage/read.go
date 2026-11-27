@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -25,6 +26,7 @@ import (
 type FileInfo struct {
 	Object
 	Revision string
+	CommitID string
 }
 
 var ErrFileChanged = errors.New("remote file changed while open")
@@ -61,7 +63,7 @@ func (s *S3) Stat(ctx context.Context, key string) (FileInfo, error) {
 		}
 		return FileInfo{}, fmt.Errorf("stat S3 object %q: %w", key, err)
 	}
-	return FileInfo{Object: Object{Key: key, Size: aws.ToInt64(out.ContentLength), LastModified: aws.ToTime(out.LastModified)}, Revision: aws.ToString(out.ETag)}, nil
+	return FileInfo{Object: Object{Key: key, Size: aws.ToInt64(out.ContentLength), LastModified: aws.ToTime(out.LastModified)}, Revision: aws.ToString(out.ETag), CommitID: out.Metadata[commitMetadata]}, nil
 }
 
 func (s *S3) ReadRange(ctx context.Context, file FileInfo, offset int64, buffer []byte) (int, error) {
@@ -98,6 +100,11 @@ func (a *AzureBlob) Stat(ctx context.Context, key string) (FileInfo, error) {
 	}
 	if out.ETag != nil {
 		file.Revision = string(*out.ETag)
+	}
+	for key, value := range out.Metadata {
+		if strings.EqualFold(key, commitMetadata) && value != nil {
+			file.CommitID = *value
+		}
 	}
 	return file, nil
 }

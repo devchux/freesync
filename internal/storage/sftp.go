@@ -145,6 +145,14 @@ func (b *sftpBody) Close() error {
 
 // Get streams a remote file. Closing the body also closes the SSH connection.
 func (s *SFTP) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	file, err := s.openFile(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return file, nil
+}
+
+func (s *SFTP) openFile(ctx context.Context, key string) (*sftpBody, error) {
 	if !validSFTPKey(key) {
 		return nil, fmt.Errorf("invalid SFTP key %q", key)
 	}

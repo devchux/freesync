@@ -27,7 +27,7 @@ func start(cfg settings, port int, interval time.Duration, save func() error) er
 }
 
 const (
-	usage           = "Usage: freesync [setup | storage setup | storage list | daemon --folder PATH [--db-type TYPE] [--db ADDRESS]]"
+	usage           = "Usage: freesync [setup | storage setup | storage list | storage mount | daemon --folder PATH [--db-type TYPE] [--db ADDRESS]]"
 	defaultPort     = 8384
 	defaultInterval = 30 * time.Second
 )

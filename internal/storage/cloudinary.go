@@ -21,14 +21,14 @@ type Cloudinary struct {
 	client *cloudinary.Cloudinary
 }
 
-// NewCloudinary loads the product environment credentials from CLOUDINARY_URL.
-func NewCloudinary() (*Cloudinary, error) {
-	client, err := cloudinary.New()
-	if err != nil {
-		return nil, errors.New("invalid Cloudinary configuration in CLOUDINARY_URL")
+// NewCloudinary configures access to a Cloudinary product environment.
+func NewCloudinary(cloudName, apiKey, apiSecret string) (*Cloudinary, error) {
+	if strings.TrimSpace(cloudName) == "" || strings.TrimSpace(apiKey) == "" || strings.TrimSpace(apiSecret) == "" {
+		return nil, errors.New("Cloudinary cloud name, API key, and API secret are required")
 	}
-	if client.Config.Cloud.CloudName == "" || client.Config.Cloud.APIKey == "" || client.Config.Cloud.APISecret == "" {
-		return nil, errors.New("CLOUDINARY_URL must provide a cloud name, API key, and API secret")
+	client, err := cloudinary.NewFromParams(cloudName, apiKey, apiSecret)
+	if err != nil {
+		return nil, errors.New("invalid Cloudinary configuration")
 	}
 	return &Cloudinary{client: client}, nil
 }

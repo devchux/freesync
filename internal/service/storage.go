@@ -25,10 +25,11 @@ var (
 )
 
 type StorageConfig struct {
-	Provider  string
-	S3        S3StorageConfig
-	AzureBlob AzureBlobStorageConfig
-	SFTP      SFTPStorageConfig
+	Provider   string
+	S3         S3StorageConfig
+	AzureBlob  AzureBlobStorageConfig
+	SFTP       SFTPStorageConfig
+	Cloudinary *CloudinaryStorageConfig `json:"cloudinary,omitempty"`
 }
 
 type S3StorageConfig struct {
@@ -45,7 +46,13 @@ type SFTPStorageConfig struct {
 	User           string
 	Root           string
 	KnownHostsFile string
-	Signer         ssh.Signer
+	Signer         ssh.Signer `json:"-"`
+}
+
+type CloudinaryStorageConfig struct {
+	CloudName string `json:"cloudName"`
+	APIKey    string `json:"apiKey"`
+	APISecret string `json:"apiSecret"`
 }
 
 type storageBackend interface {
@@ -60,7 +67,7 @@ type Storage struct {
 	mu      sync.Mutex
 }
 
-// NewStorage initializes the chosen provider. Cloudinary reads CLOUDINARY_URL.
+// NewStorage initializes the chosen provider.
 func NewStorage(ctx context.Context, cfg StorageConfig) (*Storage, error) {
 	var backend storageBackend
 	var err error
@@ -73,7 +80,11 @@ func NewStorage(ctx context.Context, cfg StorageConfig) (*Storage, error) {
 		sftp := cfg.SFTP
 		backend, err = storage.NewSFTP(sftp.Address, sftp.User, sftp.Root, sftp.KnownHostsFile, sftp.Signer)
 	case StorageCloudinary:
-		backend, err = storage.NewCloudinary()
+		if cfg.Cloudinary == nil {
+			return nil, errors.New("Cloudinary credentials are missing")
+		}
+		cloud := cfg.Cloudinary
+		backend, err = storage.NewCloudinary(cloud.CloudName, cloud.APIKey, cloud.APISecret)
 	default:
 		return nil, fmt.Errorf("unsupported storage provider %q", cfg.Provider)
 	}

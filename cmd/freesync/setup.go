@@ -40,7 +40,7 @@ func readSettings(path string) (settings, error) {
 	return cfg, err
 }
 
-func writeSettings(path string, cfg settings) error {
+func writeSettings(path string, cfg any) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

@@ -11,18 +11,19 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/devchux/freesync/internal/cache"
 	"github.com/devchux/freesync/internal/service"
 )
 
-func Mount(store *service.Storage, writes *WriteConfig) error {
+func Mount(store *service.Storage, writes *WriteConfig, cacheConfig cache.Config) error {
 	location, err := mountDirectory()
 	if err != nil {
 		return err
 	}
 	if runtime.GOOS == "darwin" {
-		return mount(store, location, "volname=FreeSync", "macFUSE", writes)
+		return mount(store, location, "volname=FreeSync", "macFUSE", writes, cacheConfig)
 	}
-	return mount(store, location, "fsname=FreeSync", "FUSE 3", writes)
+	return mount(store, location, "fsname=FreeSync", "FUSE 3", writes, cacheConfig)
 }
 
 func mountDirectory() (string, error) {

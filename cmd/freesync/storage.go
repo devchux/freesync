@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/devchux/freesync/internal/cache"
 	"github.com/devchux/freesync/internal/database"
 	"github.com/devchux/freesync/internal/drive"
 	"github.com/devchux/freesync/internal/service"
@@ -25,8 +27,26 @@ type storageSettings struct {
 	PrivateKeyFile string `json:"privateKeyFile,omitempty"`
 }
 
-func runStorage(action string, writable bool) error {
-	if action != "setup" && action != "list" && action != "mount" {
+func runStorage(action string, args []string) error {
+	var cacheConfig cache.Config
+	var writable bool
+	switch action {
+	case "mount":
+		flags := flag.NewFlagSet("storage mount", flag.ContinueOnError)
+		flags.BoolVar(&writable, "write", false, "enable queued writes where supported")
+		flags.DurationVar(&cacheConfig.DataTTL, "data-ttl", 0, "file data cache lifetime")
+		flags.DurationVar(&cacheConfig.MetadataTTL, "metadata-ttl", 0, "directory listing and file metadata cache lifetime")
+		if err := flags.Parse(args); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 || cacheConfig.DataTTL < 0 || cacheConfig.MetadataTTL < 0 {
+			return errors.New("mount flags require non-negative cache durations and no positional arguments")
+		}
+	case "setup", "list":
+		if len(args) != 0 {
+			return errors.New(usage)
+		}
+	default:
 		return errors.New(usage)
 	}
 	settingsFile, err := settingsPath()
@@ -95,7 +115,7 @@ func runStorage(action string, writable bool) error {
 				Database: dbConfig,
 			}
 		}
-		return drive.Mount(store, writeConfig)
+		return drive.Mount(store, writeConfig, cacheConfig)
 	}
 	objects, err := store.List(ctx, "")
 	if err != nil {

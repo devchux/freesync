@@ -3,6 +3,7 @@
 package drive
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -13,12 +14,14 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/devchux/freesync/internal/cache"
 	"github.com/devchux/freesync/internal/service"
 	"github.com/devchux/freesync/internal/storage"
 	"github.com/winfsp/cgofuse/fuse"
@@ -30,20 +33,37 @@ type driveReader interface {
 	ReadRange(context.Context, storage.FileInfo, int64, []byte) (int, error)
 }
 
-type filesystem struct {
-	fuse.FileSystemBase
-	store      driveReader
-	mu         sync.Mutex
-	next       uint64
-	open       map[uint64]*openFile
-	queue      *writeQueue
-	mutations  sync.Mutex
-	writers    map[string]*openFile
-	stopWrites func()
+type rangeKey struct {
+	file   storage.FileInfo
+	offset int64
+	size   int
 }
 
-func mount(store *service.Storage, location, options, runtimeName string, writes *WriteConfig) (err error) {
+type filesystem struct {
+	fuse.FileSystemBase
+	store       driveReader
+	directories *cache.Cache[string, []service.DriveEntry]
+	metadata    *cache.Cache[string, storage.FileInfo]
+	data        *cache.Cache[rangeKey, []byte]
+	mu          sync.Mutex
+	next        uint64
+	open        map[uint64]*openFile
+	queue       *writeQueue
+	mutations   sync.Mutex
+	writers     map[string]*openFile
+	stopWrites  func()
+}
+
+func mount(store *service.Storage, location, options, runtimeName string, writes *WriteConfig, cacheConfig cache.Config) (err error) {
 	files := &filesystem{store: store, open: make(map[uint64]*openFile), writers: make(map[string]*openFile)}
+	files.directories = cache.New[string, []service.DriveEntry](cacheConfig.MetadataTTL, 64)
+	files.metadata = cache.New[string, storage.FileInfo](cacheConfig.MetadataTTL, 1024)
+	files.data = cache.New[rangeKey, []byte](cacheConfig.DataTTL, 128)
+	if runtime.GOOS == "windows" {
+		options += ",FileInfoTimeout=0,DirInfoTimeout=0"
+	} else {
+		options += ",attr_timeout=0,entry_timeout=0,negative_timeout=0,direct_io"
+	}
 	mode := "read-only"
 	if writes != nil {
 		if !store.WritableMount() {
@@ -54,6 +74,7 @@ func mount(store *service.Storage, location, options, runtimeName string, writes
 			return err
 		}
 		files.queue = queue
+		queue.invalidate = files.refresh
 		mode = "writable"
 		defer func() {
 			if files.stopWrites != nil {
@@ -86,7 +107,33 @@ func mount(store *service.Storage, location, options, runtimeName string, writes
 	return nil
 }
 
+func (f *filesystem) refresh() {
+	f.directories.Clear()
+	f.metadata.Clear()
+	f.data.Clear()
+}
+
+func (f *filesystem) readMountCommands() {
+	input := bufio.NewScanner(os.Stdin)
+	for input.Scan() {
+		if strings.TrimSpace(input.Text()) == "refresh" {
+			f.refresh()
+			fmt.Fprintln(os.Stderr, "FreeSync cache cleared. Reopen the directory or refresh it in your file manager.")
+		}
+	}
+}
+
+func (f *filesystem) readDirectory(ctx context.Context, dir string) ([]service.DriveEntry, error) {
+	return f.directories.Load(dir, func() ([]service.DriveEntry, error) {
+		return f.store.ReadDir(ctx, dir)
+	})
+}
+
 func (f *filesystem) Init() {
+	if f.directories != nil {
+		fmt.Fprintln(os.Stderr, "Type refresh and press Enter to clear the mount cache.")
+		go f.readMountCommands()
+	}
 	if f.queue == nil {
 		return
 	}
@@ -163,6 +210,14 @@ func (f *filesystem) localEntry(key string) (service.DriveEntry, bool) {
 }
 
 func (f *filesystem) lookup(ctx context.Context, name string) (service.DriveEntry, error) {
+	return f.lookupEntry(ctx, name, f.readDirectory)
+}
+
+func (f *filesystem) lookupFresh(ctx context.Context, name string) (service.DriveEntry, error) {
+	return f.lookupEntry(ctx, name, f.store.ReadDir)
+}
+
+func (f *filesystem) lookupEntry(ctx context.Context, name string, list func(context.Context, string) ([]service.DriveEntry, error)) (service.DriveEntry, error) {
 	if name == "/" {
 		return service.DriveEntry{Directory: true}, nil
 	}
@@ -175,7 +230,7 @@ func (f *filesystem) lookup(ctx context.Context, name string) (service.DriveEntr
 			return entry, nil
 		}
 	}
-	entries, err := f.store.ReadDir(ctx, strings.TrimPrefix(path.Dir(name), "/"))
+	entries, err := list(ctx, strings.TrimPrefix(path.Dir(name), "/"))
 	if err != nil {
 		return service.DriveEntry{}, err
 	}
@@ -224,7 +279,7 @@ func (f *filesystem) setAttributes(stat *fuse.Stat_t, entry service.DriveEntry) 
 }
 
 func (f *filesystem) entries(ctx context.Context, dir string) ([]service.DriveEntry, error) {
-	entries, err := f.store.ReadDir(ctx, dir)
+	entries, err := f.readDirectory(ctx, dir)
 	if err != nil || f.queue == nil {
 		return entries, err
 	}
@@ -255,7 +310,7 @@ func (f *filesystem) entries(ctx context.Context, dir string) ([]service.DriveEn
 		merged[entry.Name] = entry
 	}
 	f.mu.Unlock()
-	entries = entries[:0]
+	entries = make([]service.DriveEntry, 0, len(merged))
 	for _, entry := range merged {
 		entries = append(entries, entry)
 	}
@@ -315,7 +370,9 @@ func (f *filesystem) Open(name string, flags int) (int, uint64) {
 			return fileStatus(err), 0
 		}
 	}
-	file, err := f.store.Stat(ctx, entry.File.Key)
+	file, err := f.metadata.Load(entry.File.Key, func() (storage.FileInfo, error) {
+		return f.store.Stat(ctx, entry.File.Key)
+	})
 	if err != nil {
 		return fileStatus(err), 0
 	}
@@ -336,6 +393,17 @@ func (f *filesystem) Read(_ string, buffer []byte, offset int64, handle uint64) 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if f.data.Enabled() && len(buffer) <= 256<<10 {
+		key := rangeKey{file: file.info, offset: offset, size: len(buffer)}
+		data, err := f.data.Load(key, func() ([]byte, error) {
+			n, err := f.store.ReadRange(ctx, file.info, offset, buffer)
+			return slices.Clone(buffer[:n]), err
+		})
+		if err != nil {
+			return fileStatus(err)
+		}
+		return copy(buffer, data)
+	}
 	n, err := f.store.ReadRange(ctx, file.info, offset, buffer)
 	if err != nil {
 		return fileStatus(err)

@@ -102,9 +102,9 @@ func (f *filesystem) beginEdit(name string, flags int, create bool) (int, uint64
 }
 
 func (f *filesystem) editInfo(ctx context.Context, name, key string, create bool, flags int) (storage.FileInfo, bool, error) {
-	entry, err := f.lookup(ctx, name)
+	entry, err := f.lookupFresh(ctx, name)
 	if create && errors.Is(err, fs.ErrNotExist) {
-		parent, err := f.lookup(ctx, path.Dir(name))
+		parent, err := f.lookupFresh(ctx, path.Dir(name))
 		if err != nil {
 			return storage.FileInfo{}, false, err
 		}

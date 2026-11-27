@@ -160,6 +160,9 @@ func (q *writeQueue) record(job writeJob) error {
 		return err
 	}
 	q.jobs[job.ID] = job
+	if !job.Attempted {
+		q.report(job, "pending")
+	}
 	return nil
 }
 

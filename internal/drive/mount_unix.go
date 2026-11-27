@@ -9,7 +9,21 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+
+	"github.com/devchux/freesync/internal/service"
 )
+
+func Mount(store *service.Storage, writes *WriteConfig) error {
+	location, err := mountDirectory()
+	if err != nil {
+		return err
+	}
+	if runtime.GOOS == "darwin" {
+		return mount(store, location, "volname=FreeSync", "macFUSE", writes)
+	}
+	return mount(store, location, "fsname=FreeSync", "FUSE 3", writes)
+}
 
 func mountDirectory() (string, error) {
 	home, err := os.UserHomeDir()

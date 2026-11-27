@@ -1,6 +1,6 @@
 # FreeSync
 
-FreeSync turns your own cloud or server storage into a drive on your computer. Its read-only mount presents remote files in Finder, Windows File Explorer, or a Linux file manager and fetches data on demand. You can connect S3, Azure Blob, a VPS over SFTP, or Cloudinary.
+FreeSync turns your own cloud or server storage into a drive on your computer. Its mount presents remote files in Finder, Windows File Explorer, or a Linux file manager and fetches data on demand. You can connect S3, Azure Blob, a VPS over SFTP, or Cloudinary.
 
 ## Install from source
 
@@ -102,4 +102,20 @@ Run `make mount` from the checkout, or invoke your macFUSE-enabled binary direct
 
 In Finder, press **Shift–Command–G**, enter `~/FreeSync`, and press Return. FreeSync creates this mount location if needed. If it already exists, it must be an empty directory. Keep the mount command running while you use the drive. Eject the volume in Finder or press **Ctrl+C** in the terminal when you're done.
 
-The drive is read-only. A separate local sync folder is unnecessary. Live mount behavior and provider access still need end-to-end verification, including whether Cloudinary serves partial content for authenticated raw assets.
+The default mount is read-only. A separate local sync folder is unnecessary. Live mount behavior and provider access still need end-to-end verification, including whether Cloudinary serves partial content for authenticated raw assets.
+
+## Native writable mounts
+
+Connect an S3 bucket or Azure Blob container with `freesync storage setup`, then use the mount-enabled build for your platform:
+
+```sh
+freesync storage mount --write
+```
+
+On macOS or Linux, `make mount-write` builds and runs the same command. For Azure or S3, the connection needs permission to list, read, write, and delete files. SFTP and Cloudinary currently use read-only mounts.
+
+FreeSync stores queue metadata in the database selected by `freesync setup`. SQLite, PostgreSQL, and MySQL all work. A drive-only setup without saved database settings uses the default SQLite database. Staged file contents stay on the machine that edited them, even with a shared database.
+
+FreeSync resumes queued operations when you remount the same storage connection using the same database. Let pending operations finish before switching databases. If the database becomes unavailable while recording a change, FreeSync keeps the local data. Restore the database connection and remount to reconcile the queue. A successful save means FreeSync accepted the local change. It can take longer for the upload to reach storage. If the remote file changes before a queued save commits, FreeSync keeps the local copy and prints its location. Pending files and conflicts live under `freesync/writes` in your OS configuration directory. Keep this directory while uploads are pending. FreeSync does not enable cloud versioning.
+
+File renames publish the destination before conditionally deleting the source. Both objects may be visible to other clients until the delete succeeds. Directory creation, rename, and deletion are outside this first writable implementation. A file can be busy while an upload is in progress. Opening an existing file for in-place editing or renaming it can require downloading the whole file. Saves and renames write file contents using the destination’s upload defaults. Custom object metadata and storage tiers may need to be reapplied. S3 saves currently use single-object uploads. [S3 upload limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/upload-objects.html)

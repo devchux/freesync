@@ -11,7 +11,7 @@ HOST_OS := $(shell uname -s)
 
 .DEFAULT_GOAL := help
 .PHONY: help check-go check-macos check-linux check-linux-fuse deps deps-macos deps-linux build build-macos \
-	build-linux build-windows install install-macos install-linux setup list mount
+	build-linux build-windows install install-macos install-linux setup list mount mount-write
 
 help:
 	@printf '%s\n' \
@@ -27,7 +27,8 @@ help:
 		'make install-linux  Install the Linux mount-enabled CLI to ~/.local/bin' \
 		'make setup          Connect a storage provider' \
 		'make list           List objects from the saved connection' \
-		'make mount          Mount the saved connection read-only on macOS or Linux'
+		'make mount          Mount the saved connection read-only on macOS or Linux' \
+		'make mount-write    Mount the saved S3 or Azure Blob connection with write access'
 
 check-go:
 	@command -v "$(GO)" >/dev/null 2>&1 || { \
@@ -99,10 +100,16 @@ list: build
 ifeq ($(HOST_OS),Linux)
 mount: build-linux
 	"$(LINUX_CLI)" storage mount
+
+mount-write: build-linux
+	"$(LINUX_CLI)" storage mount --write
 else ifeq ($(HOST_OS),Darwin)
 mount: build-macos
 	"$(MACOS_CLI)" storage mount
+
+mount-write: build-macos
+	"$(MACOS_CLI)" storage mount --write
 else
-mount:
+mount mount-write:
 	@echo 'See README.md for platform-specific mount instructions.' >&2; exit 1
 endif

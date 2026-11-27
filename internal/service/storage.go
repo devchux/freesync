@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"strings"
 	"sync"
 
@@ -62,6 +63,12 @@ type storageBackend interface {
 	Delete(context.Context, string) error
 }
 
+// conditionalWriter commits only against the expected revision. An empty
+// revision requires the object to be absent.
+type conditionalWriter interface {
+	PutIfUnchanged(context.Context, string, string, string, io.ReadSeeker) error
+}
+
 // Storage manages objects through one configured provider.
 type Storage struct {
 	backend storageBackend
@@ -105,8 +112,8 @@ func (s *Storage) Update(ctx context.Context, key string, body io.ReadSeeker) er
 	return s.write(ctx, key, body, true)
 }
 
-// The existence check and write are serialized within this service instance.
-// Other instances and direct provider clients can modify objects between them.
+// Providers with conditional writes enforce the precondition at commit. The
+// compatibility path for other providers serializes checks within this instance.
 func (s *Storage) write(ctx context.Context, key string, body io.ReadSeeker, replace bool) error {
 	if strings.TrimSpace(key) == "" {
 		return errors.New("storage key is required")
@@ -119,6 +126,9 @@ func (s *Storage) write(ctx context.Context, key string, body io.ReadSeeker, rep
 
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if writer, ok := s.backend.(conditionalWriter); ok {
+		return s.writeConditional(ctx, writer, key, body, replace)
 	}
 	objects, err := s.backend.List(ctx, key)
 	if err != nil {
@@ -139,6 +149,28 @@ func (s *Storage) write(ctx context.Context, key string, body io.ReadSeeker, rep
 	default:
 		return s.backend.Put(ctx, key, body)
 	}
+}
+
+func (s *Storage) writeConditional(ctx context.Context, writer conditionalWriter, key string, body io.ReadSeeker, replace bool) error {
+	var revision string
+	if replace {
+		file, err := s.backend.Stat(ctx, key)
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%w: %q", ErrObjectNotFound, key)
+		}
+		if err != nil {
+			return fmt.Errorf("check storage object %q: %w", key, err)
+		}
+		if file.Revision == "" || file.Revision == "*" {
+			return fmt.Errorf("storage object %q has no usable revision", key)
+		}
+		revision = file.Revision
+	}
+	err := writer.PutIfUnchanged(ctx, key, revision, "", body)
+	if !replace && errors.Is(err, storage.ErrFileChanged) {
+		return fmt.Errorf("%w: %q", ErrObjectExists, key)
+	}
+	return err
 }
 
 // List returns objects whose keys start with prefix.

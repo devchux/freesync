@@ -10,3 +10,9 @@ type CatalogEntry struct {
 	Directory bool
 	Size      int64
 }
+
+type WriteQueueJob struct {
+	QueueID string
+	JobID   string
+	Payload string
+}

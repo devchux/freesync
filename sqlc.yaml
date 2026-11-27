@@ -5,6 +5,8 @@ sql:
     queries:
       - internal/database/queries/catalog.sql
       - internal/database/queries/delete_catalog.sql
+      - internal/database/queries/write_queue.sql
+      - internal/database/queries/write_queue_upsert.sql
     gen:
       go:
         package: dbsql
@@ -14,6 +16,8 @@ sql:
     queries:
       - internal/database/queries/catalog.sql
       - internal/database/queries/delete_catalog.sql
+      - internal/database/queries/write_queue.sql
+      - internal/database/queries/write_queue_upsert.sql
     gen:
       go:
         package: pgsql
@@ -23,7 +27,16 @@ sql:
     queries:
       - internal/database/queries/catalog.sql
       - internal/database/queries/delete_catalog_mysql.sql
+      - internal/database/queries/write_queue.sql
+      - internal/database/queries/write_queue_upsert_mysql.sql
     gen:
       go:
         package: mysqlsql
         out: internal/database/mysql/mysqlsql
+  - engine: sqlite
+    schema: internal/database/sqlite/legacy/schema.sql
+    queries: internal/database/sqlite/legacy/queries.sql
+    gen:
+      go:
+        package: legacydbsql
+        out: internal/database/sqlite/legacy/legacydbsql

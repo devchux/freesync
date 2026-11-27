@@ -78,3 +78,20 @@ func TestPromptSettings(t *testing.T) {
 		})
 	}
 }
+
+func TestMountUsesSavedDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	defaultDB, err := mountDatabaseConfig(path)
+	if err != nil || defaultDB.Type != database.SQLite {
+		t.Fatalf("default database = %+v, error %v", defaultDB, err)
+	}
+
+	want := database.Config{Type: database.PostgreSQL, Address: "postgres://localhost/freesync"}
+	if err := writeSettings(path, settings{Database: want}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mountDatabaseConfig(path)
+	if err != nil || got != want {
+		t.Fatalf("database = %+v, error %v", got, err)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/devchux/freesync/internal/drive"
 	"github.com/devchux/freesync/internal/service"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
@@ -23,7 +24,7 @@ type storageSettings struct {
 }
 
 func runStorage(action string) error {
-	if action != "setup" && action != "list" {
+	if action != "setup" && action != "list" && action != "mount" {
 		return errors.New(usage)
 	}
 	path, err := settingsPath()
@@ -68,13 +69,20 @@ func runStorage(action string) error {
 			return fmt.Errorf("load SSH key: %w", err)
 		}
 	}
-	parent, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	ctx := context.Background()
+	if action != "mount" {
+		parent, stop := signal.NotifyContext(ctx, os.Interrupt)
+		defer stop()
+		ctx = parent
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	store, err := service.NewStorage(ctx, cfg.StorageConfig)
 	if err != nil {
 		return err
+	}
+	if action == "mount" {
+		return drive.Mount(store)
 	}
 	objects, err := store.List(ctx, "")
 	if err != nil {

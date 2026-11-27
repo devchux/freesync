@@ -56,6 +56,7 @@ type CloudinaryStorageConfig struct {
 }
 
 type storageBackend interface {
+	storage.Reader
 	Put(context.Context, string, io.ReadSeeker) error
 	List(context.Context, string) ([]storage.Object, error)
 	Delete(context.Context, string) error

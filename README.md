@@ -4,7 +4,24 @@ FreeSync turns your own cloud or server storage into a drive on your computer. I
 
 ## Install from source
 
-### macOS with Finder mounting
+### With Make
+
+Run `make help` from the FreeSync checkout to see the available commands.
+
+For Finder mounting, install [Homebrew](https://brew.sh/) and the Xcode Command Line Tools (`xcode-select --install`), then run:
+
+```sh
+make deps-macos
+make install-macos
+make setup
+make mount
+```
+
+`make deps-macos` installs Go and macFUSE when missing and downloads the Go modules. Complete any system approval or restart macFUSE requests before mounting. [macFUSE setup guide](https://github.com/macfuse/macfuse/wiki/Getting-Started)
+
+For the CLI alone, install Go, then run `make deps`, `make install`, and `make setup`. Use `make list` to list remote objects. The install targets put `freesync` in `~/.local/bin` by default. Add that directory to your PATH to run `freesync` from anywhere, or override the destination with `make install PREFIX=/your/prefix`.
+
+### Manual macOS installation with Finder mounting
 
 1. Install [Go](https://go.dev/dl/) 1.27.4 or later. Confirm it is on your PATH with `go version`.
 2. Install the Xcode Command Line Tools if you haven't already. Run `xcode-select --install` and finish the installer.
@@ -16,7 +33,7 @@ FreeSync turns your own cloud or server storage into a drive on your computer. I
    ./freesync --help
    ```
 
-### CLI without mounting
+### Manual CLI installation without mounting
 
 For provider setup and listing only, install [Go](https://go.dev/dl/) 1.27.4 or later and run the following from the checkout. This build does not require macFUSE.
 
@@ -29,7 +46,7 @@ On Windows, use `go build -o freesync.exe ./cmd/freesync` and run `.\freesync.ex
 
 ## Connect your storage
 
-Run `./freesync storage setup` and choose a provider. Use an existing bucket, container, server directory, or Cloudinary account.
+Run `make setup` or `./freesync storage setup` and choose a provider. Use an existing bucket, container, server directory, or Cloudinary account.
 
 | Enter at the prompt | What you need |
 | --- | --- |
@@ -42,7 +59,7 @@ Setup verifies that it can list objects before saving. Run `./freesync storage l
 
 ## Mount and eject the drive
 
-With the macFUSE-enabled build, run:
+Run `make mount` from the checkout, or invoke your macFUSE-enabled binary directly:
 
 ```sh
 ./freesync storage mount

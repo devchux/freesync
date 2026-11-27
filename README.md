@@ -1,6 +1,6 @@
 # FreeSync
 
-FreeSync turns your own cloud or server storage into a drive on your computer. Its read-only macOS prototype lets you browse remote files in Finder and fetch file data on demand. You can connect S3, Azure Blob, a VPS over SFTP, or Cloudinary.
+FreeSync turns your own cloud or server storage into a drive on your computer. Its read-only mount presents remote files in Finder, Windows File Explorer, or a Linux file manager and fetches data on demand. You can connect S3, Azure Blob, a VPS over SFTP, or Cloudinary.
 
 ## Install from source
 
@@ -20,6 +20,41 @@ make mount
 `make deps-macos` installs Go and macFUSE when missing and downloads the Go modules. Complete any system approval or restart macFUSE requests before mounting. [macFUSE setup guide](https://github.com/macfuse/macfuse/wiki/Getting-Started)
 
 For the CLI alone, install Go, then run `make deps`, `make install`, and `make setup`. Use `make list` to list remote objects. The install targets put `freesync` in `~/.local/bin` by default. Add that directory to your PATH to run `freesync` from anywhere, or override the destination with `make install PREFIX=/your/prefix`.
+
+### Linux with FUSE 3
+
+1. Install [Go](https://go.dev/dl/) 1.27.4 or later, Make, a C compiler, and FUSE 3 development headers and runtime. On Debian or Ubuntu, install the system packages with:
+
+   ```sh
+   sudo apt install make gcc pkg-config fuse3 libfuse3-dev
+   ```
+
+2. From the FreeSync checkout, run:
+
+   ```sh
+   make deps-linux
+   make install-linux
+   make setup
+   make mount
+   ```
+
+3. Open `~/FreeSync` in your file manager. To unmount, press **Ctrl+C** in the terminal or run `fusermount3 -u "$HOME/FreeSync"` in a second terminal. The host must allow user mounts through `/dev/fuse`.
+
+### Windows with WinFsp
+
+1. Install [WinFsp](https://winfsp.dev/rel/) on the Windows machine. If you're building there, also install [Go](https://go.dev/dl/) 1.27.4 or later.
+2. From the FreeSync checkout in PowerShell, build and run the mount-enabled CLI:
+
+   ```powershell
+   $env:CGO_ENABLED = "0"
+   go build -tags winfsp -o freesync.exe ./cmd/freesync
+   .\freesync.exe storage setup
+   .\freesync.exe storage mount
+   ```
+
+   To build the Windows executable from macOS or Linux, run `make build-windows` and copy `bin/freesync-windows-amd64.exe` to the Windows machine.
+
+3. Open the drive letter printed by FreeSync in File Explorer. The mount uses the first available letter from `F:` through `Z:`. Press **Ctrl+C** in the terminal to unmount. Remote paths are case-sensitive. The mount hides Windows reserved names and names with unsupported characters.
 
 ### Manual macOS installation with Finder mounting
 
@@ -57,7 +92,7 @@ Run `make setup` or `./freesync storage setup` and choose a provider. Use an exi
 
 Setup verifies that it can list objects before saving. Run `./freesync storage list` to list remote files or rerun setup to switch providers.
 
-## Mount and eject the drive
+## Mount and eject the drive on macOS
 
 Run `make mount` from the checkout, or invoke your macFUSE-enabled binary directly:
 
@@ -67,4 +102,4 @@ Run `make mount` from the checkout, or invoke your macFUSE-enabled binary direct
 
 In Finder, press **Shift–Command–G**, enter `~/FreeSync`, and press Return. FreeSync creates this mount location if needed. If it already exists, it must be an empty directory. Keep the mount command running while you use the drive. Eject the volume in Finder or press **Ctrl+C** in the terminal when you're done.
 
-The drive is read-only. A separate local sync folder is unnecessary. Live Finder behavior and provider access still need end-to-end verification, including whether Cloudinary serves partial content for authenticated raw assets.
+The drive is read-only. A separate local sync folder is unnecessary. Live mount behavior and provider access still need end-to-end verification, including whether Cloudinary serves partial content for authenticated raw assets.

@@ -17,6 +17,7 @@ require (
 	github.com/pressly/goose/v3 v3.30.2
 	github.com/winfsp/cgofuse v1.6.0
 	golang.org/x/crypto v0.58.0
+	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
 	modernc.org/sqlite v1.63.0
 )
@@ -66,7 +67,6 @@ require (
 	golang.org/x/exp v0.0.0-20261109185158-a52e3aef5920 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
-	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 	modernc.org/libc v1.80.2 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

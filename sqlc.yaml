@@ -7,6 +7,8 @@ sql:
       - internal/database/queries/delete_catalog.sql
       - internal/database/queries/write_queue.sql
       - internal/database/queries/write_queue_upsert.sql
+      - internal/database/queries/managed.sql
+      - internal/database/queries/managed_paths.sql
     gen:
       go:
         package: dbsql
@@ -18,6 +20,8 @@ sql:
       - internal/database/queries/delete_catalog.sql
       - internal/database/queries/write_queue.sql
       - internal/database/queries/write_queue_upsert.sql
+      - internal/database/queries/managed.sql
+      - internal/database/queries/managed_paths_postgres.sql
     gen:
       go:
         package: pgsql
@@ -29,6 +33,8 @@ sql:
       - internal/database/queries/delete_catalog_mysql.sql
       - internal/database/queries/write_queue.sql
       - internal/database/queries/write_queue_upsert_mysql.sql
+      - internal/database/queries/managed.sql
+      - internal/database/queries/managed_paths_mysql.sql
     gen:
       go:
         package: mysqlsql

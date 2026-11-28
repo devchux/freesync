@@ -17,6 +17,59 @@ type CatalogEntry struct {
 	PathHash   sql.NullString
 }
 
+type ManagedAccount struct {
+	ID           []byte
+	Email        []byte
+	FullName     []byte
+	PasswordHash []byte
+}
+
+type ManagedCommit struct {
+	Drive  []byte
+	Member []byte
+	ID     []byte
+	Path   []byte
+	Base   []byte
+}
+
+type ManagedDrife struct {
+	ID []byte
+}
+
+type ManagedFile struct {
+	Drive    []byte
+	Path     []byte
+	Revision []byte
+	Size     int64
+	Modified int64
+}
+
+type ManagedGrant struct {
+	Drive     []byte
+	AccountID []byte
+	Pending   int32
+	Writable  int32
+}
+
+type ManagedMember struct {
+	Drive      []byte
+	Name       []byte
+	Credential []byte
+	Invited    int32
+	Writable   int32
+}
+
+type ManagedOwner struct {
+	Drive     []byte
+	AccountID []byte
+}
+
+type ManagedSession struct {
+	TokenHash []byte
+	AccountID []byte
+	Expires   int64
+}
+
 type WriteQueueJob struct {
 	QueueID string
 	JobID   string

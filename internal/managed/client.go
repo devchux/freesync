@@ -1,8 +1,10 @@
 package managed
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -23,18 +25,88 @@ type Client struct {
 }
 
 func NewClient(endpoint, drive, token string) (*Client, error) {
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return nil, fmt.Errorf("invalid managed server URL")
-	}
-	ip := net.ParseIP(u.Hostname())
-	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || ip.IsLoopback())) {
-		return nil, fmt.Errorf("managed server URL requires HTTPS outside loopback")
+	base, err := serverURL(endpoint)
+	if err != nil {
+		return nil, err
 	}
 	if !validPath(drive) || strings.Contains(drive, "/") || token == "" {
 		return nil, fmt.Errorf("managed drive and credential are required")
 	}
-	return &Client{endpoint: strings.TrimRight(u.String(), "/") + "/drives/" + url.PathEscape(drive), token: token}, nil
+	return &Client{endpoint: base + "/drives/" + url.PathEscape(drive), token: token}, nil
+}
+
+func serverURL(endpoint string) (string, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("invalid managed server URL")
+	}
+	ip := net.ParseIP(u.Hostname())
+	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || ip.IsLoopback())) {
+		return "", fmt.Errorf("managed server URL requires HTTPS outside loopback")
+	}
+	return strings.TrimRight(u.String(), "/"), nil
+}
+
+var ErrSessionExpired = errors.New("managed session expired or is invalid; sign in again")
+
+func SignUp(ctx context.Context, endpoint, fullName, email, password string) error {
+	response, err := sendCredentials(ctx, endpoint, "signup", credentials{FullName: fullName, Email: email, Password: password})
+	if err != nil {
+		return err
+	}
+	return response.Body.Close()
+}
+
+func Login(ctx context.Context, endpoint, email, password string) (Account, string, error) {
+	response, err := sendCredentials(ctx, endpoint, "login", credentials{Email: email, Password: password})
+	if err != nil {
+		return Account{}, "", err
+	}
+	defer response.Body.Close()
+	var account Account
+	if err := json.NewDecoder(response.Body).Decode(&account); err != nil {
+		return Account{}, "", err
+	}
+	for _, cookie := range response.Cookies() {
+		if (cookie.Name == sessionCookie || cookie.Name == secureSessionCookie) && cookie.Value != "" {
+			return account, cookie.Value, nil
+		}
+	}
+	return Account{}, "", errors.New("managed login returned no session")
+}
+
+func sendCredentials(ctx context.Context, endpoint, action string, input credentials) (*http.Response, error) {
+	base, err := serverURL(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/auth/"+action, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	response, err := transport.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode == http.StatusCreated || response.StatusCode == http.StatusOK {
+		return response, nil
+	}
+	response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusUnauthorized:
+		return nil, errors.New("invalid email or password")
+	case http.StatusConflict:
+		return nil, errors.New("an account already exists for this email")
+	case http.StatusBadRequest:
+		return nil, errors.New("enter a valid email, full name for signup, and a password of 12–72 bytes")
+	default:
+		return nil, fmt.Errorf("managed %s: HTTP %d", action, response.StatusCode)
+	}
 }
 
 var transport = http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -54,12 +126,17 @@ func (c *Client) Request(ctx context.Context, method, action string, params url.
 	}
 	res.Body.Close()
 	switch res.StatusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
+	case http.StatusUnauthorized:
+		return nil, ErrSessionExpired
+	case http.StatusForbidden:
 		return nil, fs.ErrPermission
 	case http.StatusNotFound:
 		return nil, fs.ErrNotExist
 	case http.StatusConflict:
-		return nil, storage.ErrFileChanged
+		if action == "file" || action == "read" {
+			return nil, storage.ErrFileChanged
+		}
+		return nil, fs.ErrExist
 	case http.StatusRequestEntityTooLarge:
 		return nil, storage.ErrUploadTooLarge
 	default:

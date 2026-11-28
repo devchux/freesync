@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,7 +23,7 @@ func (s *Server) archive(w http.ResponseWriter, ctx context.Context, drive strin
 	var snapshot []byte
 	var files []storage.FileInfo
 	if backup {
-		meta, err := readMetadata(ctx, s.DB)
+		meta, err := readMetadata(ctx, s.queries())
 		if err != nil {
 			return err
 		}
@@ -110,14 +111,17 @@ func Restore(ctx context.Context, config database.Config, contents Contents, sou
 		return err
 	}
 	defer tx.Rollback()
-	var occupied bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM managed_drives)").Scan(&occupied); err != nil {
-		return err
+	queries := database.NewManagedQueries(tx, config.Type)
+	for _, find := range []func(context.Context) (string, error){queries.AnyManagedDrive, queries.AnyManagedAccount} {
+		_, err := find(ctx)
+		if err == nil {
+			return errors.New("restore requires a database with no managed drives or accounts")
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 	}
-	if occupied {
-		return errors.New("restore requires a database with no managed drives")
-	}
-	if err := meta.insert(ctx, tx, config.Type); err != nil {
+	if err := meta.insert(ctx, queries); err != nil {
 		return err
 	}
 
@@ -153,7 +157,7 @@ func archiveMetadata(ctx context.Context, archive *tar.Reader, dir string) (meta
 		if err := json.NewDecoder(archive).Decode(&meta); err != nil {
 			return metadata{}, err
 		}
-		if meta.Version != 1 {
+		if meta.Version != 1 && meta.Version != 2 {
 			return metadata{}, fmt.Errorf("unsupported backup version %d", meta.Version)
 		}
 		return meta, nil
@@ -167,7 +171,7 @@ func archiveMetadata(ctx context.Context, archive *tar.Reader, dir string) (meta
 			return metadata{}, err
 		}
 		defer db.Close()
-		return readMetadata(ctx, db)
+		return readMetadata(ctx, database.NewManagedQueries(db, database.SQLite))
 	default:
 		return metadata{}, errors.New("missing backup metadata")
 	}

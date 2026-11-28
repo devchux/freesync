@@ -20,10 +20,12 @@ import (
 	"github.com/devchux/freesync/internal/database"
 	"github.com/devchux/freesync/internal/drive"
 	"github.com/devchux/freesync/internal/managed"
+	"github.com/devchux/freesync/internal/route"
 	"github.com/devchux/freesync/internal/service"
+	"golang.org/x/term"
 )
 
-const managedUsage = "Usage: freesync managed [serve | create | invite | accept | revoke | mount | export | backup | restore] [flags]"
+const managedUsage = "Usage: freesync managed [serve | signup | create | claim | invite | accept | revoke | mount | export | backup | restore] [flags]"
 
 func runManaged(args []string) error {
 	if len(args) == 0 {
@@ -34,17 +36,20 @@ func runManaged(args []string) error {
 	switch action {
 	case "serve", "restore":
 		return managedServer(action, flags, args[1:])
-	case "create", "invite", "accept", "revoke", "mount", "export", "backup":
+	case "signup", "create", "claim", "invite", "accept", "revoke", "mount", "export", "backup":
 	default:
 		return errors.New(managedUsage)
 	}
 	endpoint := flags.String("server", "http://127.0.0.1:8484", "managed server URL")
 	id := flags.String("drive", "default", "drive name")
-	var member, file string
+	email := flags.String("email", "", "account email (target for claim)")
+	var member, file, fullName string
 	var writable bool
 	switch action {
+	case "signup":
+		flags.StringVar(&fullName, "name", "", "full name")
 	case "invite", "revoke":
-		flags.StringVar(&member, "member", "", "individual member name")
+		flags.StringVar(&member, "member", "", "member account email")
 		if action == "invite" {
 			flags.BoolVar(&writable, "write", false, "grant write access")
 		}
@@ -59,7 +64,38 @@ func runManaged(args []string) error {
 	if flags.NArg() != 0 {
 		return errors.New(managedUsage)
 	}
-	token := os.Getenv("FREESYNC_MANAGED_TOKEN")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var account managed.Account
+	var token string
+	if action == "backup" || action == "claim" {
+		token = os.Getenv("FREESYNC_MANAGED_ADMIN_TOKEN")
+		if token == "" {
+			return errors.New("set FREESYNC_MANAGED_ADMIN_TOKEN for this operation")
+		}
+	} else {
+		if *email == "" {
+			return errors.New("--email is required")
+		}
+		password, err := managedPassword()
+		if err != nil {
+			return err
+		}
+		defer clear(password)
+		authCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		if action == "signup" {
+			if fullName == "" {
+				return errors.New("--name is required for signup")
+			}
+			return managed.SignUp(authCtx, *endpoint, fullName, *email, string(password))
+		}
+		account, token, err = managed.Login(authCtx, *endpoint, *email, string(password))
+		clear(password)
+		if err != nil {
+			return err
+		}
+	}
 	client, err := managed.NewClient(*endpoint, *id, token)
 	if err != nil {
 		return err
@@ -76,7 +112,7 @@ func runManaged(args []string) error {
 			if err != nil {
 				return err
 			}
-			spool := fmt.Sprintf("%x", sha256.Sum256([]byte(*endpoint+"\x00"+*id+"\x00"+token)))
+			spool := fmt.Sprintf("%x", sha256.Sum256([]byte(*endpoint+"\x00"+*id+"\x00"+account.ID)))
 			dir := filepath.Join(filepath.Dir(config), "managed-spool", spool)
 			dbConfig, err := mountDatabaseConfig(config)
 			if err != nil {
@@ -89,8 +125,6 @@ func runManaged(args []string) error {
 		}
 		return drive.Mount(client, writes, cache.Config{})
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	method := http.MethodPost
 	if action == "backup" || action == "export" {
 		method = http.MethodGet
@@ -103,10 +137,16 @@ func runManaged(args []string) error {
 		if member == "" {
 			return errors.New("--member is required")
 		}
-		params.Set("member", member)
+		params.Set("email", member)
 		if writable {
 			params.Set("write", "true")
 		}
+	}
+	if action == "claim" {
+		if *email == "" {
+			return errors.New("--email is required for claim")
+		}
+		params.Set("email", *email)
 	}
 	response, err := client.Request(ctx, method, action, params, nil)
 	if err != nil {
@@ -185,7 +225,7 @@ func managedServer(action string, flags *flag.FlagSet, args []string) error {
 		return managed.Restore(ctx, dbConfig, contents, file)
 	}
 	token := os.Getenv("FREESYNC_MANAGED_ADMIN_TOKEN")
-	if len(token) < 32 {
+	if token != "" && len(token) < 32 {
 		return errors.New("set FREESYNC_MANAGED_ADMIN_TOKEN to a random secret of at least 32 characters")
 	}
 	host, _, err := net.SplitHostPort(listen)
@@ -197,7 +237,7 @@ func managedServer(action string, flags *flag.FlagSet, args []string) error {
 		return err
 	}
 	defer db.Close()
-	handler := (&managed.Server{DB: db, DatabaseType: backend, Contents: contents, AdminToken: token}).Handler()
+	handler := route.Managed(&managed.Server{DB: db, DatabaseType: backend, Contents: contents, AdminToken: token})
 	server := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
@@ -218,4 +258,17 @@ func managedServer(action string, flags *flag.FlagSet, args []string) error {
 		}
 		return nil
 	}
+}
+
+func managedPassword() ([]byte, error) {
+	if password, ok := os.LookupEnv("FREESYNC_MANAGED_PASSWORD"); ok {
+		return []byte(password), nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil, errors.New("sign in from a terminal or set FREESYNC_MANAGED_PASSWORD")
+	}
+	fmt.Fprint(os.Stderr, "Password: ")
+	password, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	return password, err
 }

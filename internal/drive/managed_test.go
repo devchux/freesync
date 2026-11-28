@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/devchux/freesync/internal/database"
 	"github.com/devchux/freesync/internal/managed"
+	"github.com/devchux/freesync/internal/route"
 	"github.com/devchux/freesync/internal/storage"
 )
 
@@ -69,7 +71,7 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { db.Close() })
-		server := httptest.NewServer((&managed.Server{DB: db, DatabaseType: config.Type, Contents: contents, AdminToken: adminToken}).Handler())
+		server := httptest.NewServer(route.Managed(&managed.Server{DB: db, DatabaseType: config.Type, Contents: contents, AdminToken: adminToken}))
 		t.Cleanup(server.Close)
 		return server.URL
 	}
@@ -89,14 +91,6 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 		}
 		t.Cleanup(func() { response.Close() })
 		return response
-	}
-	readToken := func(body io.Reader) string {
-		t.Helper()
-		var token string
-		if err := json.NewDecoder(body).Decode(&token); err != nil || token == "" {
-			t.Fatalf("invalid credential: %v", err)
-		}
-		return token
 	}
 	assertCurrent := func(c *managed.Client, want string) storage.FileInfo {
 		t.Helper()
@@ -118,24 +112,117 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 	contents := make(managedTestContents)
 	endpoint := serve(testConfig("FREESYNC_TEST_SOURCE_DB", "metadata.sqlite"), contents)
 	admin := client(endpoint, adminToken)
-	request(admin, http.MethodPost, "create", nil)
-	invite := func(name, writable string) string {
+	const password = "test account password"
+	login := func(endpoint, email string) (managed.Account, *managed.Client) {
 		t.Helper()
-		invite := readToken(request(admin, http.MethodPost, "invite", url.Values{"member": {name}, "write": {writable}}))
-		token := readToken(request(client(endpoint, invite), http.MethodPost, "accept", nil))
-		if _, err := client(endpoint, invite).Request(ctx, http.MethodPost, "accept", nil, nil); !errors.Is(err, fs.ErrPermission) {
-			t.Fatalf("second invitation redemption: %v", err)
+		account, token, err := managed.Login(ctx, endpoint, email, password)
+		if err != nil {
+			t.Fatal(err)
 		}
-		return token
+		return account, client(endpoint, token)
+	}
+	const aliceEmail, bobEmail, readerEmail = "alice@example.test", "bob@example.test", "reader@example.test"
+	for name, email := range map[string]string{"Alice Owner": aliceEmail, "Bob Writer": bobEmail, "Read Only": readerEmail} {
+		if err := managed.SignUp(ctx, endpoint, name, email, password); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := managed.Login(ctx, endpoint, aliceEmail, "incorrect password"); err == nil {
+		t.Fatal("incorrect password accepted")
+	}
+	aliceAccount, alice := login(endpoint, aliceEmail)
+	_, bob := login(endpoint, bobEmail)
+	_, reader := login(endpoint, readerEmail)
+	request(alice, http.MethodPost, "create", nil)
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser := &http.Client{Jar: jar}
+	browserRequest := func(method, path, origin, body string, want int) *http.Response {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, method, endpoint+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		response, err := browser.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { response.Body.Close() })
+		if response.StatusCode != want {
+			t.Fatalf("%s %s: got HTTP %d, want %d", method, path, response.StatusCode, want)
+		}
+		return response
+	}
+	signin := browserRequest(http.MethodPost, "/auth/login", endpoint, `{"email":"alice@example.test","password":"test account password"}`, http.StatusOK)
+	cookies := signin.Cookies()
+	if len(cookies) != 1 || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatalf("browser session cookie flags: %+v", cookies)
+	}
+	browserRequest(http.MethodGet, "/auth/me", "", "", http.StatusOK)
+	list := browserRequest(http.MethodGet, "/drives", "", "", http.StatusOK)
+	var drives []struct {
+		ID    string
+		Owner bool
+	}
+	if err := json.NewDecoder(list.Body).Decode(&drives); err != nil || len(drives) != 1 || drives[0].ID != "team" || !drives[0].Owner {
+		t.Fatalf("browser ownership listing: %+v, %v", drives, err)
+	}
+	browserRequest(http.MethodPost, "/drives/forged/create", "https://other.example.test", "", http.StatusForbidden)
+	browserRequest(http.MethodPost, "/auth/logout", endpoint, "", http.StatusNoContent)
+	browserRequest(http.MethodGet, "/auth/me", "", "", http.StatusUnauthorized)
+	if _, err := admin.Request(ctx, http.MethodGet, "access", nil, nil); !errors.Is(err, managed.ErrSessionExpired) {
+		t.Fatalf("admin credential grants drive access: %v", err)
+	}
+	invite := func(email, writable string, member *managed.Client) {
+		t.Helper()
+		request(alice, http.MethodPost, "invite", url.Values{"email": {email}, "write": {writable}})
+		if err := member.CheckAccess(ctx); !errors.Is(err, fs.ErrPermission) {
+			t.Fatalf("pending invitation grants access: %v", err)
+		}
+		request(member, http.MethodPost, "accept", nil)
+	}
+	invite(bobEmail, "true", bob)
+	invite(readerEmail, "false", reader)
+	if _, err := bob.Request(ctx, http.MethodPost, "invite", url.Values{"email": {readerEmail}}, nil); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("non-owner can invite: %v", err)
+	}
+	if _, err := reader.Request(ctx, http.MethodPost, "revoke", url.Values{"email": {bobEmail}}, nil); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("non-owner can revoke: %v", err)
 	}
 
-	aliceToken, bobToken, readerToken := invite("alice", "true"), invite("bob", "true"), invite("reader", "false")
-	alice, bob, reader := client(endpoint, aliceToken), client(endpoint, bobToken), client(endpoint, readerToken)
 	if err := reader.CheckAccess(ctx); err != nil || reader.WritableMount() {
 		t.Fatalf("reader permissions: %v", err)
 	}
 	if err := reader.CommitWrite(ctx, "report.txt", "", "reader", false, strings.NewReader("denied")); !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("reader save: %v", err)
+	}
+	const nested = "résumé/notes.txt"
+	if err := alice.CommitWrite(ctx, nested, "", "nested", false, strings.NewReader("nested")); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := alice.ReadDir(ctx, "résumé")
+	if err != nil || len(entries) != 1 || entries[0].Name != "notes.txt" {
+		t.Fatalf("nested listing: %+v, %v", entries, err)
+	}
+	for _, collision := range []string{"résumé", nested + "/child.txt"} {
+		if err := alice.CommitWrite(ctx, collision, "", "collision", false, strings.NewReader("denied")); !errors.Is(err, storage.ErrFileChanged) {
+			t.Fatalf("file/directory collision at %q: %v", collision, err)
+		}
+	}
+	nestedFile, err := alice.Stat(ctx, nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := alice.CommitDelete(ctx, nested, nestedFile.Revision); err != nil {
+		t.Fatal(err)
 	}
 	if err := alice.CommitWrite(ctx, "report.txt", "", "initial", false, strings.NewReader("initial")); err != nil {
 		t.Fatal(err)
@@ -188,7 +275,7 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 	if err != nil || string(exported) != "Alice's edit" {
 		t.Fatalf("export body: %q, %v", exported, err)
 	}
-	request(admin, http.MethodPost, "revoke", url.Values{"member": {"bob"}})
+	request(alice, http.MethodPost, "revoke", url.Values{"email": {bobEmail}})
 	if _, err := bob.Stat(ctx, base.Key); !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("revoked member stat: %v", err)
 	}
@@ -203,14 +290,20 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 		t.Fatalf("restore with matching contents already uploaded: %v", err)
 	}
 	restored := serve(target, restoredContents)
-	current := assertCurrent(client(restored, aliceToken), "Alice's edit")
+	restoredAccount, restoredAlice := login(restored, aliceEmail)
+	if restoredAccount != aliceAccount {
+		t.Fatalf("restored owner mismatch: %+v", restoredAccount)
+	}
+	request(restoredAlice, http.MethodGet, "members", nil)
+	current := assertCurrent(restoredAlice, "Alice's edit")
 	if current.Revision == base.Revision {
 		t.Fatal("save did not advance revision")
 	}
-	if err := client(restored, bobToken).CheckAccess(ctx); !errors.Is(err, fs.ErrPermission) {
+	_, restoredBob := login(restored, bobEmail)
+	if err := restoredBob.CheckAccess(ctx); !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("revoked member access: %v", err)
 	}
-	restoredReader := client(restored, readerToken)
+	_, restoredReader := login(restored, readerEmail)
 	if err := restoredReader.CheckAccess(ctx); err != nil || restoredReader.WritableMount() {
 		t.Fatalf("restored reader permissions: %v", err)
 	}

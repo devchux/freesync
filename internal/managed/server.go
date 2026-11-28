@@ -36,6 +36,9 @@ type Server struct {
 	Contents     Contents
 	AdminToken   string
 	mu           sync.RWMutex
+	authMu       sync.Mutex
+	authWindow   time.Time
+	authAttempts int
 }
 
 func secret() string { return rand.Text() + rand.Text() }
@@ -48,22 +51,23 @@ func validPath(key string) bool {
 	return len(key) <= 2048 && key != "." && fs.ValidPath(key) && utf8.ValidString(key) && !strings.ContainsAny(key, "\\:\x00")
 }
 
-func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/drives/{drive}/{action}", s.serve)
-	return mux
+// Protect applies the managed API's origin checks and response headers.
+func (s *Server) Protect(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if !sameOrigin(r) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
-func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
+// HandleDrive handles operations on an individual managed drive.
+func (s *Server) HandleDrive(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	drive, action := r.PathValue("drive"), r.PathValue("action")
-	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok || token == "" {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
 	if !validPath(drive) || strings.Contains(drive, "/") || len(drive) > 255 {
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -75,110 +79,113 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 	}
-	admin := s.AdminToken != "" && subtle.ConstantTimeCompare([]byte(digest(token)), []byte(digest(s.AdminToken))) == 1
-	switch action {
-	case "backup", "create", "invite", "revoke":
-		if !admin {
+	if action == "backup" || action == "claim" {
+		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if s.AdminToken == "" || subtle.ConstantTimeCompare([]byte(digest(token)), []byte(digest(s.AdminToken))) != 1 {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
+		switch {
+		case action == "backup" && r.Method == http.MethodGet:
+			s.respondError(w, s.archive(w, ctx, drive, true))
+		case action == "claim" && r.Method == http.MethodPost:
+			s.respondError(w, s.claim(ctx, drive, r.URL.Query().Get("email")))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+		return
 	}
-	var err error
-	switch {
-	case admin && action == "backup" && r.Method == http.MethodGet:
-		err = s.archive(w, ctx, drive, true)
-	case admin && action == "create" && r.Method == http.MethodPost:
-		var exists bool
-		err = s.DB.QueryRowContext(ctx, s.query("SELECT EXISTS (SELECT 1 FROM managed_drives WHERE id = ?)"), drive).Scan(&exists)
-		if err == nil && !exists {
-			_, err = s.DB.ExecContext(ctx, s.query("INSERT INTO managed_drives VALUES (?)"), drive)
-		}
-	case admin && action == "invite" && r.Method == http.MethodPost:
-		name := r.URL.Query().Get("member")
-		if name == "" || len(name) > 255 {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		invitation := secret()
-		_, err = s.DB.ExecContext(ctx, s.query("INSERT INTO managed_members VALUES (?, ?, ?, 1, ?)"), drive, name, digest(invitation), permission(r.URL.Query().Get("write") == "true"))
-		if err == nil {
-			json.NewEncoder(w).Encode(invitation)
-		}
-	case admin && action == "revoke" && r.Method == http.MethodPost:
-		_, err = s.DB.ExecContext(ctx, s.query("DELETE FROM managed_members WHERE drive = ? AND name = ?"), drive, r.URL.Query().Get("member"))
-	case action == "accept" && r.Method == http.MethodPost:
-		credential := secret()
-		var result sql.Result
-		result, err = s.DB.ExecContext(ctx, s.query("UPDATE managed_members SET credential = ?, invited = 0 WHERE drive = ? AND credential = ? AND invited = 1"), digest(credential), drive, digest(token))
-		if err == nil {
-			count, _ := result.RowsAffected()
-			if count == 0 {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-			json.NewEncoder(w).Encode(credential)
-		}
-	default:
-		var member string
-		var writable bool
-		if !admin {
-			err = s.DB.QueryRowContext(ctx, s.query("SELECT credential, writable FROM managed_members WHERE drive = ? AND credential = ? AND invited = 0"), drive, digest(token)).Scan(&member, &writable)
-			if errors.Is(err, sql.ErrNoRows) {
-				w.WriteHeader(http.StatusForbidden)
-				return
-			}
-			if err != nil {
-				break
-			}
-		} else {
-			writable = true
-		}
-		if r.Method != http.MethodGet && !writable {
-			w.WriteHeader(http.StatusForbidden)
-			return
-		}
-		err = s.files(w, r, drive, member, writable)
+	account, err := s.account(r)
+	if err != nil {
+		s.accountError(w, err)
+		return
+	}
+	if action == "create" && r.Method == http.MethodPost {
+		s.respondError(w, s.createDrive(ctx, drive, account.ID))
+		return
+	}
+
+	ownerID, err := s.queries().ManagedDriveOwner(ctx, drive)
+	if errors.Is(err, sql.ErrNoRows) {
+		w.WriteHeader(http.StatusForbidden)
+		return
 	}
 	if err != nil {
-		switch {
-		case errors.Is(err, fs.ErrInvalid):
-			w.WriteHeader(http.StatusBadRequest)
-		case errors.Is(err, sql.ErrNoRows):
-			w.WriteHeader(http.StatusNotFound)
-		case errors.Is(err, storage.ErrFileChanged):
-			w.WriteHeader(http.StatusConflict)
-		default:
-			log.Printf("Managed drive %q %s: %v", drive, action, err)
-			w.WriteHeader(http.StatusInternalServerError)
+		s.respondError(w, err)
+		return
+	}
+	owner := ownerID == account.ID
+	switch action {
+	case "invite", "revoke", "members":
+		if !owner {
+			w.WriteHeader(http.StatusForbidden)
+			return
 		}
+		s.respondError(w, s.manageMembers(w, r, drive, ownerID))
+		return
+	}
+	if action == "accept" && r.Method == http.MethodPost {
+		s.respondError(w, s.accept(ctx, drive, account.ID))
+		return
+	}
+	writable := owner
+	if !owner {
+		grant, err := s.queries().ManagedGrantByAccount(ctx, drive, account.ID)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && grant.Pending != 0) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if err != nil {
+			s.respondError(w, err)
+			return
+		}
+		writable = grant.Writable != 0
+	}
+	if r.Method != http.MethodGet && !writable {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	s.respondError(w, s.files(w, r, drive, account.ID, writable))
+}
+
+func (s *Server) respondError(w http.ResponseWriter, err error) {
+	if err == nil {
+		return
+	}
+	switch {
+	case errors.Is(err, fs.ErrInvalid):
+		w.WriteHeader(http.StatusBadRequest)
+	case errors.Is(err, fs.ErrPermission):
+		w.WriteHeader(http.StatusForbidden)
+	case errors.Is(err, sql.ErrNoRows):
+		w.WriteHeader(http.StatusNotFound)
+	case errors.Is(err, storage.ErrFileChanged), errors.Is(err, fs.ErrExist):
+		w.WriteHeader(http.StatusConflict)
+	default:
+		log.Printf("Managed request: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
 	}
 }
 
 func (s *Server) stat(ctx context.Context, drive, key string) (storage.FileInfo, error) {
-	file := storage.FileInfo{Object: storage.Object{Key: key}}
-	var modified int64
-	err := s.DB.QueryRowContext(ctx, s.query("SELECT revision, size, modified FROM managed_files WHERE drive = ? AND path = ?"), drive, key).Scan(&file.Revision, &file.Size, &modified)
-	file.LastModified = time.Unix(0, modified).UTC()
-	return file, err
+	file, err := s.queries().ManagedFileByPath(ctx, drive, key)
+	return storage.FileInfo{Object: managedObject(file), Revision: file.Revision}, err
+}
+
+func managedObject(file database.ManagedFile) storage.Object {
+	return storage.Object{Key: file.Path, Size: file.Size, LastModified: time.Unix(0, file.Modified).UTC()}
 }
 
 func (s *Server) list(ctx context.Context, drive, prefix string) ([]storage.Object, error) {
-	rows, err := s.DB.QueryContext(ctx, s.query("SELECT path, size, modified FROM managed_files WHERE drive = ? AND substr(path, 1, length(?)) = ? ORDER BY path"), drive, prefix, prefix)
+	files, err := s.queries().ManagedFilesByPrefix(ctx, drive, prefix, prefix)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var objects []storage.Object
-	for rows.Next() {
-		var object storage.Object
-		var modified int64
-		if err := rows.Scan(&object.Key, &object.Size, &modified); err != nil {
-			return nil, err
-		}
-		object.LastModified = time.Unix(0, modified).UTC()
-		objects = append(objects, object)
+	for _, file := range files {
+		objects = append(objects, managedObject(file))
 	}
-	return objects, rows.Err()
+	return objects, nil
 }
 
 const objectPrefix = ".freesync-managed/"
@@ -188,8 +195,7 @@ func (s *Server) files(w http.ResponseWriter, r *http.Request, drive, member str
 	key, action := r.URL.Query().Get("path"), r.PathValue("action")
 	switch {
 	case r.Method == http.MethodGet && action == "access":
-		var id string
-		if err := s.DB.QueryRowContext(ctx, s.query("SELECT id FROM managed_drives WHERE id = ?"), drive).Scan(&id); err != nil {
+		if _, err := s.queries().ManagedDriveByID(ctx, drive); err != nil {
 			return err
 		}
 		return json.NewEncoder(w).Encode(writable)
@@ -268,11 +274,11 @@ func (s *Server) commit(r *http.Request, drive, member, key string) error {
 		return err
 	}
 	defer tx.Rollback()
-	var oldPath, oldBase string
+	queries := database.NewManagedQueries(tx, s.DatabaseType)
 	if id != "" {
-		err := tx.QueryRowContext(ctx, s.query("SELECT path, base FROM managed_commits WHERE drive = ? AND member = ? AND id = ?"), drive, member, id).Scan(&oldPath, &oldBase)
+		receipt, err := queries.ManagedCommitByID(ctx, drive, member, id)
 		if err == nil {
-			if oldPath != key || oldBase != base {
+			if receipt.Path != key || receipt.Base != base {
 				return storage.ErrFileChanged
 			}
 			return nil
@@ -281,8 +287,8 @@ func (s *Server) commit(r *http.Request, drive, member, key string) error {
 			return err
 		}
 	}
-	var revision string
-	err = tx.QueryRowContext(ctx, s.query("SELECT revision FROM managed_files WHERE drive = ? AND path = ?"), drive, key).Scan(&revision)
+	current, err := queries.ManagedFileByPath(ctx, drive, key)
+	revision := current.Revision
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -293,15 +299,16 @@ func (s *Server) commit(r *http.Request, drive, member, key string) error {
 		return storage.ErrFileChanged
 	}
 	if deleting {
-		_, err = tx.ExecContext(ctx, s.query("DELETE FROM managed_files WHERE drive = ? AND path = ?"), drive, key)
-	} else {
-		var collision bool
-		err = tx.QueryRowContext(ctx, s.query("SELECT EXISTS (SELECT 1 FROM managed_files WHERE drive = ? AND (instr(path, ?) = 1 OR instr(?, concat(path, '/')) = 1))"), drive, key+"/", key).Scan(&collision)
-		if err != nil {
+		if err := queries.DeleteManagedFile(ctx, drive, key); err != nil {
 			return err
 		}
-		if collision {
+	} else {
+		_, err := queries.ManagedPathCollision(ctx, drive, key+"/", key)
+		if err == nil {
 			return storage.ErrFileChanged
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
 		}
 		body, err := os.CreateTemp("", "freesync-save-*")
 		if err != nil {
@@ -322,19 +329,16 @@ func (s *Server) commit(r *http.Request, drive, member, key string) error {
 		}
 		modified := time.Now().UnixNano()
 		if revision == "" {
-			_, err = tx.ExecContext(ctx, s.query("INSERT INTO managed_files VALUES (?, ?, ?, ?, ?)"), drive, key, next, size, modified)
+			err = queries.InsertManagedFile(ctx, drive, key, next, size, modified)
 		} else {
-			_, err = tx.ExecContext(ctx, s.query("UPDATE managed_files SET revision = ?, size = ?, modified = ? WHERE drive = ? AND path = ?"), next, size, modified, drive, key)
+			err = queries.UpdateManagedFile(ctx, next, size, modified, drive, key)
 		}
 		if err != nil {
 			return err
 		}
 	}
-	if err != nil {
-		return err
-	}
 	if id != "" {
-		if _, err := tx.ExecContext(ctx, s.query("INSERT INTO managed_commits VALUES (?, ?, ?, ?, ?)"), drive, member, id, key, base); err != nil {
+		if err := queries.InsertManagedCommit(ctx, drive, member, id, key, base); err != nil {
 			return err
 		}
 	}
@@ -349,29 +353,13 @@ func (s *Server) commit(r *http.Request, drive, member, key string) error {
 	return nil
 }
 
-func permission(writable bool) int {
+func permission(writable bool) int64 {
 	if writable {
 		return 1
 	}
 	return 0
 }
 
-func (s *Server) query(query string) string {
-	return bind(s.DatabaseType, query)
-}
-
-func bind(databaseType, query string) string {
-	if databaseType != database.PostgreSQL {
-		return query
-	}
-	query = strings.ReplaceAll(query, "instr(", "strpos(")
-	var result strings.Builder
-	for i, part := range strings.Split(query, "?") {
-		if i > 0 {
-			result.WriteByte('$')
-			result.WriteString(strconv.Itoa(i))
-		}
-		result.WriteString(part)
-	}
-	return result.String()
+func (s *Server) queries() database.ManagedQueries {
+	return database.NewManagedQueries(s.DB, s.DatabaseType)
 }

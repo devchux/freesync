@@ -2,72 +2,85 @@ package managed
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/devchux/freesync/internal/database"
 	"github.com/devchux/freesync/internal/storage"
 )
 
 // Backup rows use strings for a portable, lossless encoding of SQL values.
 type metadata struct {
-	Version int
-	Drives  [][]string
-	Members [][]string
-	Files   [][]string
-	Commits [][]string
+	Version  int
+	Drives   [][]string
+	Members  [][]string
+	Files    [][]string
+	Commits  [][]string
+	Accounts [][]string
+	Owners   [][]string
+	Grants   [][]string
 }
 
-type metadataTable struct {
-	name    string
-	columns string
-	numeric int // Number of trailing integer columns.
-	rows    *[][]string
-}
-
-func (m *metadata) tables() []metadataTable {
-	return []metadataTable{
-		{"managed_drives", "id", 0, &m.Drives},
-		{"managed_members", "drive,name,credential,invited,writable", 2, &m.Members},
-		{"managed_files", "drive,path,revision,size,modified", 2, &m.Files},
-		{"managed_commits", "drive,member,id,path,base", 0, &m.Commits},
+func readMetadata(ctx context.Context, queries database.ManagedQueries) (metadata, error) {
+	result := metadata{Version: 2}
+	var err error
+	result.Drives, err = readBackupRows(ctx, queries.AllManagedDrives, func(id string) []string {
+		return []string{id}
+	})
+	if err != nil {
+		return metadata{}, err
 	}
-}
-
-func readMetadata(ctx context.Context, db *sql.DB) (metadata, error) {
-	result := metadata{Version: 1}
-	for _, table := range result.tables() {
-		records, err := readMetadataTable(ctx, db, table)
-		if err != nil {
-			return metadata{}, err
-		}
-		*table.rows = records
+	result.Accounts, err = readBackupRows(ctx, queries.AllManagedAccounts, func(row database.ManagedAccount) []string {
+		return []string{row.ID, row.Email, row.FullName, row.PasswordHash}
+	})
+	if err != nil {
+		return metadata{}, err
 	}
-	return result, nil
+	result.Owners, err = readBackupRows(ctx, queries.AllManagedOwners, func(row database.ManagedOwner) []string {
+		return []string{row.Drive, row.AccountID}
+	})
+	if err != nil {
+		return metadata{}, err
+	}
+	result.Grants, err = readBackupRows(ctx, queries.AllManagedGrants, func(row database.ManagedGrant) []string {
+		return []string{row.Drive, row.AccountID, decimal(row.Pending), decimal(row.Writable)}
+	})
+	if err != nil {
+		return metadata{}, err
+	}
+	result.Members, err = readBackupRows(ctx, queries.AllManagedLegacyMembers, func(row database.ManagedMember) []string {
+		return []string{row.Drive, row.Name, row.Credential, decimal(row.Invited), decimal(row.Writable)}
+	})
+	if err != nil {
+		return metadata{}, err
+	}
+	result.Files, err = readBackupRows(ctx, queries.AllManagedFiles, func(row database.ManagedFile) []string {
+		return []string{row.Drive, row.Path, row.Revision, decimal(row.Size), decimal(row.Modified)}
+	})
+	if err != nil {
+		return metadata{}, err
+	}
+	result.Commits, err = readBackupRows(ctx, queries.AllManagedCommits, func(row database.ManagedCommit) []string {
+		return []string{row.Drive, row.Member, row.ID, row.Path, row.Base}
+	})
+	return result, err
 }
 
-func readMetadataTable(ctx context.Context, db *sql.DB, table metadataTable) ([][]string, error) {
-	rows, err := db.QueryContext(ctx, "SELECT "+table.columns+" FROM "+table.name)
+func readBackupRows[T any](ctx context.Context, query func(context.Context) ([]T, error), encode func(T) []string) ([][]string, error) {
+	rows, err := query(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	count := strings.Count(table.columns, ",") + 1
 	var records [][]string
-	for rows.Next() {
-		record, fields := make([]string, count), make([]any, count)
-		for i := range record {
-			fields[i] = &record[i]
-		}
-		if err := rows.Scan(fields...); err != nil {
-			return nil, err
-		}
-		records = append(records, record)
+	for _, row := range rows {
+		records = append(records, encode(row))
 	}
-	return records, rows.Err()
+	return records, nil
 }
+
+func decimal(value int64) string { return strconv.FormatInt(value, 10) }
 
 func (m *metadata) contents() ([]storage.FileInfo, error) {
 	var files []storage.FileInfo
@@ -84,31 +97,63 @@ func (m *metadata) contents() ([]storage.FileInfo, error) {
 	return files, nil
 }
 
-func (m *metadata) insert(ctx context.Context, tx *sql.Tx, databaseType string) error {
-	for _, table := range m.tables() {
-		count := strings.Count(table.columns, ",") + 1
-		placeholders := strings.TrimSuffix(strings.Repeat("?,", count), ",")
-		query := bind(databaseType, "INSERT INTO "+table.name+" ("+table.columns+") VALUES ("+placeholders+")")
-		for _, row := range *table.rows {
-			if len(row) != count {
+func (m *metadata) insert(ctx context.Context, queries database.ManagedQueries) error {
+	// Insert in foreign key order. The caller rolls back on any malformed row.
+	tables := []struct {
+		name   string
+		rows   [][]string
+		width  int
+		insert func([]string) error
+	}{
+		{"drives", m.Drives, 1, func(row []string) error {
+			return queries.InsertManagedDrive(ctx, row[0])
+		}},
+		{"accounts", m.Accounts, 4, func(row []string) error {
+			return queries.InsertManagedAccount(ctx, row[0], row[1], row[2], row[3])
+		}},
+		{"owners", m.Owners, 2, func(row []string) error {
+			return queries.InsertManagedOwner(ctx, row[0], row[1])
+		}},
+		{"grants", m.Grants, 4, func(row []string) error {
+			return insertBackupWithIntegers(row, func(pending, writable int64) error {
+				return queries.InsertManagedGrant(ctx, row[0], row[1], pending, writable)
+			})
+		}},
+		{"legacy members", m.Members, 5, func(row []string) error {
+			return insertBackupWithIntegers(row, func(invited, writable int64) error {
+				return queries.InsertManagedLegacyMember(ctx, row[0], row[1], row[2], invited, writable)
+			})
+		}},
+		{"files", m.Files, 5, func(row []string) error {
+			return insertBackupWithIntegers(row, func(size, modified int64) error {
+				return queries.InsertManagedFile(ctx, row[0], row[1], row[2], size, modified)
+			})
+		}},
+		{"commits", m.Commits, 5, func(row []string) error {
+			return queries.InsertManagedCommit(ctx, row[0], row[1], row[2], row[3], row[4])
+		}},
+	}
+	for _, table := range tables {
+		for _, row := range table.rows {
+			if len(row) != table.width {
 				return fmt.Errorf("invalid backup row for %s", table.name)
 			}
-			args := make([]any, count)
-			for i, value := range row {
-				if i < count-table.numeric {
-					args[i] = value
-					continue
-				}
-				number, err := strconv.ParseInt(value, 10, 64)
-				if err != nil {
-					return err
-				}
-				args[i] = number
-			}
-			if _, err := tx.ExecContext(ctx, query, args...); err != nil {
-				return err
+			if err := table.insert(row); err != nil {
+				return fmt.Errorf("restore %s: %w", table.name, err)
 			}
 		}
 	}
 	return nil
+}
+
+func insertBackupWithIntegers(row []string, insert func(int64, int64) error) error {
+	first, err := strconv.ParseInt(row[len(row)-2], 10, 64)
+	if err != nil {
+		return err
+	}
+	second, err := strconv.ParseInt(row[len(row)-1], 10, 64)
+	if err != nil {
+		return err
+	}
+	return insert(first, second)
 }

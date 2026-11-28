@@ -11,6 +11,59 @@ type CatalogEntry struct {
 	Size      int64
 }
 
+type ManagedAccount struct {
+	ID           string
+	Email        string
+	FullName     string
+	PasswordHash string
+}
+
+type ManagedCommit struct {
+	Drive  string
+	Member string
+	ID     string
+	Path   string
+	Base   string
+}
+
+type ManagedDrife struct {
+	ID string
+}
+
+type ManagedFile struct {
+	Drive    string
+	Path     string
+	Revision string
+	Size     int64
+	Modified int64
+}
+
+type ManagedGrant struct {
+	Drive     string
+	AccountID string
+	Pending   int32
+	Writable  int32
+}
+
+type ManagedMember struct {
+	Drive      string
+	Name       string
+	Credential string
+	Invited    int32
+	Writable   int32
+}
+
+type ManagedOwner struct {
+	Drive     string
+	AccountID string
+}
+
+type ManagedSession struct {
+	TokenHash string
+	AccountID string
+	Expires   int64
+}
+
 type WriteQueueJob struct {
 	QueueID string
 	JobID   string

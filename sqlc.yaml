@@ -8,6 +8,7 @@ sql:
       - internal/database/queries/write_queue.sql
       - internal/database/queries/write_queue_upsert.sql
       - internal/database/queries/managed.sql
+      - internal/database/queries/managed_history.sql
       - internal/database/queries/managed_paths.sql
     gen:
       go:
@@ -21,6 +22,7 @@ sql:
       - internal/database/queries/write_queue.sql
       - internal/database/queries/write_queue_upsert.sql
       - internal/database/queries/managed.sql
+      - internal/database/queries/managed_history.sql
       - internal/database/queries/managed_paths_postgres.sql
     gen:
       go:
@@ -34,6 +36,7 @@ sql:
       - internal/database/queries/write_queue.sql
       - internal/database/queries/write_queue_upsert_mysql.sql
       - internal/database/queries/managed.sql
+      - internal/database/queries/managed_history.sql
       - internal/database/queries/managed_paths_mysql.sql
     gen:
       go:

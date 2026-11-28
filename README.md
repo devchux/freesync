@@ -160,7 +160,17 @@ The mount reports pending, committed, and conflicted saves in its terminal. If t
 
 Serve the web client and API from the same HTTPS origin. Send JSON to `POST /auth/signup` with `fullName`, `email`, and `password`, then to `POST /auth/login` with `email` and `password`. Login sets an HTTP-only session cookie. Use `GET /auth/me` to load the signed-in account and `POST /auth/logout` to end the session.
 
-`GET /drives` lists owned drives, accepted access, and pending invitations for the account. Use `POST /drives/{drive}/create` to create a drive, `POST /drives/{drive}/accept` to accept an invitation, and `GET /drives/{drive}/members` to list its members as the owner. The owner can call `POST /drives/{drive}/invite?email=...&write=true` and `POST /drives/{drive}/revoke?email=...`.
+`GET /drives` lists owned drives, accepted access, and pending invitations for the account. Use `POST /drives/{drive}/create` to create a drive, `POST /drives/{drive}/accept` to accept an invitation, and `GET /drives/{drive}/members` to list its members as the owner. The owner can invite with `POST /drives/{drive}/invite?email=...&write=true`, grant immediate access with `POST /drives/{drive}/grant?email=...&write=true`, and remove access or a pending invitation with `POST /drives/{drive}/revoke?email=...`. Omit `write=true` for read-only access.
+
+### Optional file history
+
+History starts off for every managed drive. Owners can enable it with `PUT /drives/{drive}/history` and a JSON body such as `{"enabled":true,"maxAgeDays":30,"maxVersions":5}`. Both limits must be positive. Age starts when a file revision is replaced or deleted. The version limit applies per path and counts superseded revisions. To disable history and release all retained versions, send `{"enabled":false}`.
+
+- Owners can call `GET /drives/{drive}/history` to read settings, `retainedVersions`, and `retainedBytes`. The byte count is the logical size of the retained objects. Provider versioning, soft delete, and retention policies can keep deleted data billable.
+- Accepted members can call `GET /drives/{drive}/versions?path=report.txt` for retained revisions, newest first. Deleted paths can still have retained revisions.
+- Members with write access can call `POST /drives/{drive}/restore?path=report.txt&version=RETAINED&revision=CURRENT`. Pass the current revision to avoid overwriting a concurrent edit, or omit `revision` to restore a deleted path. A successful restore creates a new revision. A stale current revision returns HTTP 409.
+
+FreeSync expires old versions in the background and retries failed storage deletions. Managed backups include the history settings and retained contents. Member exports contain current files.
 
 ### Export and recovery
 

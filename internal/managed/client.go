@@ -133,7 +133,7 @@ func (c *Client) Request(ctx context.Context, method, action string, params url.
 	case http.StatusNotFound:
 		return nil, fs.ErrNotExist
 	case http.StatusConflict:
-		if action == "file" || action == "read" {
+		if action == "file" || action == "read" || action == "restore" {
 			return nil, storage.ErrFileChanged
 		}
 		return nil, fs.ErrExist

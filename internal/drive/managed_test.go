@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/devchux/freesync/internal/database"
 	"github.com/devchux/freesync/internal/managed"
@@ -110,7 +111,8 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 	}
 
 	contents := make(managedTestContents)
-	endpoint := serve(testConfig("FREESYNC_TEST_SOURCE_DB", "metadata.sqlite"), contents)
+	source := testConfig("FREESYNC_TEST_SOURCE_DB", "metadata.sqlite")
+	endpoint := serve(source, contents)
 	admin := client(endpoint, adminToken)
 	const password = "test account password"
 	login := func(endpoint, email string) (managed.Account, *managed.Client) {
@@ -190,7 +192,11 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 		request(member, http.MethodPost, "accept", nil)
 	}
 	invite(bobEmail, "true", bob)
-	invite(readerEmail, "false", reader)
+	request(alice, http.MethodPost, "invite", url.Values{"email": {readerEmail}})
+	if err := reader.CheckAccess(ctx); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("pending invitation grants access: %v", err)
+	}
+	request(alice, http.MethodPost, "grant", url.Values{"email": {readerEmail}})
 	if _, err := bob.Request(ctx, http.MethodPost, "invite", url.Values{"email": {readerEmail}}, nil); !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("non-owner can invite: %v", err)
 	}
@@ -279,6 +285,61 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 	if _, err := bob.Stat(ctx, base.Key); !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("revoked member stat: %v", err)
 	}
+	setHistory := func(owner *managed.Client, policy string) {
+		t.Helper()
+		response, err := owner.Request(ctx, http.MethodPut, "history", nil, strings.NewReader(policy))
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Close()
+	}
+	assertHistory := func(c *managed.Client, enabled bool, bytes, count int64) {
+		t.Helper()
+		var settings struct {
+			Enabled          bool
+			RetainedBytes    int64
+			RetainedVersions int64
+		}
+		err := json.NewDecoder(request(c, http.MethodGet, "history", nil)).Decode(&settings)
+		if err != nil || settings.Enabled != enabled || settings.RetainedBytes != bytes || settings.RetainedVersions != count {
+			t.Fatalf("history settings = %+v, %v", settings, err)
+		}
+	}
+	assertHistory(alice, false, 0, 0)
+	if _, err := reader.Request(ctx, http.MethodPut, "history", nil, strings.NewReader(`{"enabled":false}`)); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("reader changed history: %v", err)
+	}
+	setHistory(alice, `{"enabled":true,"maxAgeDays":30,"maxVersions":1}`)
+	previous := assertCurrent(alice, "Alice's edit")
+	if err := alice.CommitWrite(ctx, base.Key, previous.Revision, "history-edit", false, strings.NewReader("replacement")); err != nil {
+		t.Fatal(err)
+	}
+	assertHistory(alice, true, previous.Size, 1)
+	assertVersion := func(c *managed.Client, revision string) {
+		t.Helper()
+		var versions []struct{ Revision string }
+		err := json.NewDecoder(request(c, http.MethodGet, "versions", url.Values{"path": {base.Key}})).Decode(&versions)
+		if err != nil || len(versions) != 1 || versions[0].Revision != revision {
+			t.Fatalf("history versions = %+v, %v", versions, err)
+		}
+	}
+	assertVersion(reader, previous.Revision)
+	replacement := assertCurrent(alice, "replacement")
+	restoreVersion := url.Values{"path": {base.Key}, "version": {previous.Revision}, "revision": {replacement.Revision}}
+	if _, err := reader.Request(ctx, http.MethodPost, "restore", restoreVersion, nil); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("reader restored history: %v", err)
+	}
+	restoreVersion.Set("revision", base.Revision)
+	if _, err := alice.Request(ctx, http.MethodPost, "restore", restoreVersion, nil); !errors.Is(err, storage.ErrFileChanged) {
+		t.Fatalf("restore with stale base: %v", err)
+	}
+	restoreVersion.Set("revision", replacement.Revision)
+	request(alice, http.MethodPost, "restore", restoreVersion)
+	newRevision := assertCurrent(alice, "Alice's edit").Revision
+	if newRevision == previous.Revision || newRevision == replacement.Revision || len(contents) != 2 {
+		t.Fatalf("restore revision = %s, storage objects = %d", newRevision, len(contents))
+	}
+	assertVersion(alice, replacement.Revision)
 	backup := request(admin, http.MethodGet, "backup", nil)
 	target := testConfig("FREESYNC_TEST_RESTORE_DB", "restored.sqlite")
 	restoredContents := make(managedTestContents)
@@ -307,4 +368,36 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 	if err := restoredReader.CheckAccess(ctx); err != nil || restoredReader.WritableMount() {
 		t.Fatalf("restored reader permissions: %v", err)
 	}
+	assertHistory(restoredAlice, true, replacement.Size, 1)
+	assertVersion(restoredAlice, replacement.Revision)
+	setHistory(restoredAlice, `{"enabled":false}`)
+	assertHistory(restoredAlice, false, 0, 0)
+	if len(restoredContents) != 1 {
+		t.Fatalf("disabling history left %d storage objects", len(restoredContents))
+	}
+
+	// Move a retained version past its age limit without waiting for the clock.
+	db, err := database.Open(ctx, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	q := database.NewManagedQueries(db, source.Type)
+	if err := q.DeleteManagedVersion(ctx, replacement.Revision); err != nil {
+		t.Fatal(err)
+	}
+	retired := time.Now().UTC().AddDate(0, 0, -31).UnixNano()
+	if err := q.InsertManagedVersion(ctx, "team", base.Key, replacement.Revision, replacement.Size, replacement.LastModified.UnixNano(), retired); err != nil {
+		t.Fatal(err)
+	}
+	assertHistory(alice, true, 0, 0)
+	expired := url.Values{"path": {base.Key}, "version": {replacement.Revision}, "revision": {newRevision}}
+	if _, err := alice.Request(ctx, http.MethodPost, "restore", expired, nil); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("restore of expired version: %v", err)
+	}
+	setHistory(alice, `{"enabled":true,"maxAgeDays":30,"maxVersions":1}`)
+	if len(contents) != 1 {
+		t.Fatalf("expiring history left %d storage objects", len(contents))
+	}
+
 }

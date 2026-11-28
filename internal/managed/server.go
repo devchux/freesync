@@ -116,9 +116,13 @@ func (s *Server) HandleDrive(w http.ResponseWriter, r *http.Request) {
 	}
 	owner := ownerID == account.ID
 	switch action {
-	case "invite", "revoke", "members":
+	case "invite", "grant", "revoke", "members", "history":
 		if !owner {
 			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if action == "history" {
+			s.respondError(w, s.historySettings(w, r, drive))
 			return
 		}
 		s.respondError(w, s.manageMembers(w, r, drive, ownerID))
@@ -240,7 +244,13 @@ func (s *Server) files(w http.ResponseWriter, r *http.Request, drive, member str
 		_, err = w.Write(buffer)
 		return err
 	case (r.Method == http.MethodPut || r.Method == http.MethodDelete) && action == "file":
-		return s.commit(r, drive, member, key)
+		return s.commit(r, drive, member, key, func(dst io.Writer) (int64, error) {
+			return io.Copy(dst, r.Body)
+		})
+	case r.Method == http.MethodGet && action == "versions":
+		return s.listVersions(w, r, drive, key)
+	case r.Method == http.MethodPost && action == "restore":
+		return s.restoreVersion(r, drive, member, key)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		return nil
@@ -259,7 +269,7 @@ func (s *Server) read(ctx context.Context, revision string, offset int64, buffer
 	return err
 }
 
-func (s *Server) commit(r *http.Request, drive, member, key string) error {
+func (s *Server) commit(r *http.Request, drive, member, key string, writeBody func(io.Writer) (int64, error)) error {
 	ctx := r.Context()
 	base, id := r.URL.Query().Get("revision"), r.URL.Query().Get("commit")
 	if len(id) > 128 {
@@ -269,12 +279,7 @@ func (s *Server) commit(r *http.Request, drive, member, key string) error {
 	if deleting && base == "" {
 		return storage.ErrFileChanged
 	}
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	queries := database.NewManagedQueries(tx, s.DatabaseType)
+	queries := s.queries()
 	if id != "" {
 		receipt, err := queries.ManagedCommitByID(ctx, drive, member, id)
 		if err == nil {
@@ -298,11 +303,10 @@ func (s *Server) commit(r *http.Request, drive, member, key string) error {
 	if revision != base {
 		return storage.ErrFileChanged
 	}
-	if deleting {
-		if err := queries.DeleteManagedFile(ctx, drive, key); err != nil {
-			return err
-		}
-	} else {
+	var next string
+	var size int64
+	defer s.reclaim(ctx)
+	if !deleting {
 		_, err := queries.ManagedPathCollision(ctx, drive, key+"/", key)
 		if err == nil {
 			return storage.ErrFileChanged
@@ -316,18 +320,34 @@ func (s *Server) commit(r *http.Request, drive, member, key string) error {
 		}
 		defer os.Remove(body.Name())
 		defer body.Close()
-		size, err := io.Copy(body, r.Body)
+		size, err = writeBody(body)
 		if err != nil {
 			return err
 		}
 		if _, err := body.Seek(0, io.SeekStart); err != nil {
 			return err
 		}
-		next := secret()
+		next = secret()
+		if err := queries.InsertManagedReclaim(ctx, next); err != nil {
+			return err
+		}
 		if err := s.Contents.New(ctx, objectPrefix+next, body); err != nil {
 			return err
 		}
-		modified := time.Now().UnixNano()
+	}
+	now := time.Now().UTC()
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	queries = database.NewManagedQueries(tx, s.DatabaseType)
+	if deleting {
+		if err := queries.DeleteManagedFile(ctx, drive, key); err != nil {
+			return err
+		}
+	} else {
+		modified := now.UnixNano()
 		if revision == "" {
 			err = queries.InsertManagedFile(ctx, drive, key, next, size, modified)
 		} else {
@@ -342,15 +362,32 @@ func (s *Server) commit(r *http.Request, drive, member, key string) error {
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	if revision != "" {
-		if err := s.Contents.Delete(ctx, objectPrefix+revision); err != nil {
-			log.Printf("Reclaim managed revision %s: %v", revision, err)
+	if next != "" {
+		if err := queries.DeleteManagedReclaim(ctx, next); err != nil {
+			return err
 		}
 	}
-	return nil
+	if revision != "" {
+		policy, err := loadHistoryPolicy(ctx, queries, drive)
+		if err != nil {
+			return err
+		}
+		if policy.Enabled {
+			if err := queries.InsertManagedVersion(ctx, drive, key, revision, current.Size, current.Modified, now.UnixNano()); err != nil {
+				return err
+			}
+			rows, err := queries.ManagedVersionsByPath(ctx, drive, key)
+			if err != nil {
+				return err
+			}
+			if err := pruneVersions(ctx, queries, rows, map[string]historyPolicy{drive: policy}, now); err != nil {
+				return err
+			}
+		} else if err := queries.InsertManagedReclaim(ctx, revision); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func permission(writable bool) int64 {

@@ -58,38 +58,13 @@ func runStorage(action string, args []string) error {
 	if action == "setup" {
 		cfg, err = promptStorage()
 	} else {
-		var data []byte
-		data, err = os.ReadFile(path)
-		if errors.Is(err, os.ErrNotExist) {
-			return errors.New("run freesync storage setup to connect a provider")
-		}
-		if err == nil {
-			err = json.Unmarshal(data, &cfg)
-		}
+		cfg, err = loadStorageSettings(path)
 	}
 	if err != nil {
 		return err
 	}
-	if cfg.Provider == service.StorageSFTP {
-		key, err := os.ReadFile(cfg.PrivateKeyFile)
-		if err != nil {
-			return fmt.Errorf("read SSH key: %w", err)
-		}
-		cfg.SFTP.Signer, err = ssh.ParsePrivateKey(key)
-		var encrypted *ssh.PassphraseMissingError
-		if errors.As(err, &encrypted) && term.IsTerminal(int(os.Stdin.Fd())) {
-			fmt.Fprint(os.Stderr, "SSH key passphrase: ")
-			passphrase, readErr := term.ReadPassword(int(os.Stdin.Fd()))
-			fmt.Fprintln(os.Stderr)
-			if readErr != nil {
-				return readErr
-			}
-			cfg.SFTP.Signer, err = ssh.ParsePrivateKeyWithPassphrase(key, passphrase)
-			clear(passphrase)
-		}
-		if err != nil {
-			return fmt.Errorf("load SSH key: %w", err)
-		}
+	if cfg, err = loadStorageSigner(cfg); err != nil {
+		return err
 	}
 	ctx := context.Background()
 	if action != "mount" {
@@ -224,4 +199,42 @@ func localStoragePath(value string) (string, error) {
 		value = filepath.Join(home, suffix)
 	}
 	return filepath.Abs(value)
+}
+
+func loadStorageSettings(path string) (storageSettings, error) {
+	var cfg storageSettings
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return cfg, errors.New("run freesync storage setup to connect a provider")
+	}
+	if err != nil {
+		return cfg, err
+	}
+	err = json.Unmarshal(data, &cfg)
+	return cfg, err
+}
+
+func loadStorageSigner(cfg storageSettings) (storageSettings, error) {
+	if cfg.Provider == service.StorageSFTP {
+		key, err := os.ReadFile(cfg.PrivateKeyFile)
+		if err != nil {
+			return cfg, fmt.Errorf("read SSH key: %w", err)
+		}
+		cfg.SFTP.Signer, err = ssh.ParsePrivateKey(key)
+		var encrypted *ssh.PassphraseMissingError
+		if errors.As(err, &encrypted) && term.IsTerminal(int(os.Stdin.Fd())) {
+			fmt.Fprint(os.Stderr, "SSH key passphrase: ")
+			passphrase, readErr := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr)
+			if readErr != nil {
+				return cfg, readErr
+			}
+			cfg.SFTP.Signer, err = ssh.ParsePrivateKeyWithPassphrase(key, passphrase)
+			clear(passphrase)
+		}
+		if err != nil {
+			return cfg, fmt.Errorf("load SSH key: %w", err)
+		}
+	}
+	return cfg, nil
 }

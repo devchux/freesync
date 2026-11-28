@@ -26,6 +26,11 @@ func (s *Storage) ReadDir(ctx context.Context, directory string) ([]DriveEntry, 
 	if err != nil {
 		return nil, err
 	}
+	return DriveEntries(prefix, objects), nil
+}
+
+// DriveEntries returns the immediate children under a slash-terminated prefix.
+func DriveEntries(prefix string, objects []storage.Object) []DriveEntry {
 	children := make(map[string]DriveEntry)
 	for _, object := range objects {
 		key, ok := strings.CutPrefix(object.Key, prefix)
@@ -45,7 +50,7 @@ func (s *Storage) ReadDir(ctx context.Context, directory string) ([]DriveEntry, 
 		entries = append(entries, entry)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-	return entries, nil
+	return entries
 }
 
 func (s *Storage) Stat(ctx context.Context, key string) (storage.FileInfo, error) {

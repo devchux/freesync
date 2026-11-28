@@ -133,3 +133,32 @@ Both flags default to `0`, which disables reuse in the FreeSync cache. The data 
 In the terminal running the mount, type `refresh` and press Enter to clear both caches. Refresh or reopen the directory in your file manager to fetch the current listing. Reopen an already open file to read a new remote revision.
 
 On writable mounts, the terminal reports uploads as pending, uploading, committed, conflicted, or pending retry. A committed message means the provider operation completed and FreeSync recorded completion. If an upload conflicts, the terminal also prints where the staged copy was retained.
+
+## Self-host a managed drive
+
+A FreeSync server provides per-drive sharing and revision checks. It stores metadata and permissions in SQLite, PostgreSQL, or MySQL and uses the existing storage service for file contents. Run one server per managed database and configure a dedicated bucket, container, or storage root with `freesync storage setup`. The server stores internal objects under `.freesync-managed/`.
+
+Set `FREESYNC_MANAGED_ADMIN_TOKEN` to a randomly generated secret of at least 32 characters and run `freesync managed serve`. SQLite is the default. To use PostgreSQL or MySQL, pass `--db-type postgres` or `--db-type mysql` and `--db CONNECTION_STRING` to `serve` and `restore`. The server listens on loopback by default. To connect from other computers, put it behind an HTTPS reverse proxy and pass `--server https://drive.example.com` to each client command.
+
+Set `FREESYNC_MANAGED_TOKEN` to the admin token for the following commands.
+
+```sh
+freesync managed create --drive team
+freesync managed invite --drive team --member alice --write
+```
+
+Send the invitation token to Alice privately. Alice sets `FREESYNC_MANAGED_TOKEN` to the invitation token and runs `freesync managed accept --drive team`. Both commands print a JSON string. Use the token inside the quotes. Alice then sets `FREESYNC_MANAGED_TOKEN` to the credential returned by `accept` and runs:
+
+```sh
+freesync managed mount --drive team --write
+```
+
+Install the platform mount runtime described above. The same credential can be used on multiple computers. For read-only invitations, omit `--write` from both `invite` and `mount`. To revoke Alice's access, run `freesync managed revoke --drive team --member alice` with the admin token.
+
+The mount reports pending, committed, and conflicted saves in its terminal. If two users edit the same revision, the first commit becomes the current file and FreeSync prints the location of the other user's staged copy. Copy that staged file before resolving the conflict. The server checks revisions with file history off.
+
+### Export and recovery
+
+A member can run `freesync managed export --drive team --file team.tar` to download a tar archive of ordinary files. An administrator can run `freesync managed backup --file server.tar` to save all drives, current file contents, and managed-drive metadata, including permissions and invitations. The backup format works across all three database engines. The server protects the snapshot against concurrent writes while streaming it.
+
+On a fresh server, configure an empty storage backend and run `freesync managed restore --db /path/to/managed.sqlite --file server.tar` with a database that has no managed drives. For PostgreSQL and MySQL, create the database first and pass its connection string instead of a file path. Start the server with `freesync managed serve --db /path/to/managed.sqlite` and its configured admin token. Member credentials continue working with the restored database. Preserve client spool files separately if they contain pending or conflicted edits.

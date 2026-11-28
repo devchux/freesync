@@ -137,6 +137,8 @@ func (c *Client) Request(ctx context.Context, method, action string, params url.
 			return nil, storage.ErrFileChanged
 		}
 		return nil, fs.ErrExist
+	case http.StatusUnprocessableEntity:
+		return nil, storage.ErrDirectoryNotEmpty
 	case http.StatusRequestEntityTooLarge:
 		return nil, storage.ErrUploadTooLarge
 	default:
@@ -217,6 +219,26 @@ func (c *Client) CommitWrite(ctx context.Context, key, revision, id string, _ bo
 
 func (c *Client) CommitDelete(ctx context.Context, key, revision string) error {
 	response, err := c.Request(ctx, http.MethodDelete, "file", url.Values{"path": {key}, "revision": {revision}}, nil)
+	if err != nil {
+		return err
+	}
+	return response.Close()
+}
+
+func (c *Client) MakeDirectory(ctx context.Context, key string) error {
+	return c.mutateDirectory(ctx, http.MethodPut, key, "")
+}
+
+func (c *Client) RemoveDirectory(ctx context.Context, key string) error {
+	return c.mutateDirectory(ctx, http.MethodDelete, key, "")
+}
+
+func (c *Client) RenameDirectory(ctx context.Context, key, destination string) error {
+	return c.mutateDirectory(ctx, http.MethodPost, key, destination)
+}
+
+func (c *Client) mutateDirectory(ctx context.Context, method, key, destination string) error {
+	response, err := c.Request(ctx, method, "directory", url.Values{"path": {key}, "destination": {destination}}, nil)
 	if err != nil {
 		return err
 	}

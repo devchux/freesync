@@ -119,10 +119,17 @@ func (m *metadata) contents() ([]storage.FileInfo, error) {
 				return nil, errors.New("invalid backup file record")
 			}
 			size, err := strconv.ParseInt(row[3], 10, 64)
+
 			if err != nil || size < 0 || !validPath(row[2]) || strings.Contains(row[2], "/") || seen[row[2]] {
 				return nil, errors.New("invalid backup revision")
 			}
 			seen[row[2]] = true
+			if records.width == 5 && strings.HasSuffix(row[1], "/") {
+				if size != 0 || !validPath(strings.TrimSuffix(row[1], "/")) {
+					return nil, errors.New("invalid backup directory marker")
+				}
+				continue
+			}
 			files = append(files, storage.FileInfo{Revision: row[2], Object: storage.Object{Size: size}})
 		}
 	}

@@ -157,6 +157,8 @@ func (s *Server) respondError(w http.ResponseWriter, err error) {
 		return
 	}
 	switch {
+	case errors.Is(err, storage.ErrDirectoryNotEmpty):
+		w.WriteHeader(http.StatusUnprocessableEntity)
 	case errors.Is(err, fs.ErrInvalid):
 		w.WriteHeader(http.StatusBadRequest)
 	case errors.Is(err, fs.ErrPermission):
@@ -217,6 +219,8 @@ func (s *Server) files(w http.ResponseWriter, r *http.Request, drive, member str
 		return nil
 	}
 	switch {
+	case r.Method != http.MethodGet && action == "directory":
+		return s.mutateDirectory(r, drive, key)
 	case r.Method == http.MethodGet && action == "stat":
 		file, err := s.stat(ctx, drive, key)
 		if err != nil {

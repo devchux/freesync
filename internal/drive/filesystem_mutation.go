@@ -65,7 +65,7 @@ func (f *filesystem) Rename(from, to string) int {
 		return 0
 	}
 	if entry.Directory {
-		return -fuse.ENOTSUP
+		return f.renameDirectory(ctx, from, to)
 	}
 	source, destination := strings.TrimPrefix(from, "/"), strings.TrimPrefix(to, "/")
 	if f.activeEdit(source) != nil || f.activeEdit(destination) != nil {

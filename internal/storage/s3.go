@@ -50,7 +50,15 @@ func (s *S3) PutIfUnchanged(ctx context.Context, key, revision, commitID string,
 	} else {
 		in.IfMatch = &revision
 	}
-	err := s.put(ctx, in)
+	size, err := remainingSize(body)
+	if err != nil {
+		return err
+	}
+	if size >= multipartThreshold {
+		err = s.putMultipart(ctx, in, body, size)
+	} else {
+		err = s.put(ctx, in)
+	}
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.ErrorCode() {

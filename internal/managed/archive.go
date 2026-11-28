@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/devchux/freesync/internal/database"
 	"github.com/devchux/freesync/internal/service"
@@ -42,6 +43,10 @@ func (s *Server) archive(w http.ResponseWriter, ctx context.Context, drive strin
 			return err
 		}
 		for _, object := range objects {
+			if strings.HasSuffix(object.Key, "/") {
+				files = append(files, storage.FileInfo{Object: object})
+				continue
+			}
 			file, err := s.stat(ctx, drive, object.Key)
 			if err != nil {
 				return err
@@ -61,6 +66,12 @@ func (s *Server) archive(w http.ResponseWriter, ctx context.Context, drive strin
 	}
 	for _, file := range files {
 		name := file.Key
+		if !backup && strings.HasSuffix(name, "/") {
+			if err := archive.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeDir, Mode: 0700, ModTime: file.LastModified}); err != nil {
+				return err
+			}
+			continue
+		}
 		if backup {
 			name = "objects/" + file.Revision
 		}

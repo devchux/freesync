@@ -191,3 +191,11 @@ func (s *Storage) Delete(ctx context.Context, key string) error {
 	}
 	return s.backend.Delete(ctx, key)
 }
+
+func (s *Storage) EnableCloudinaryFallback(limit int64) (func(), error) {
+	backend, ok := s.backend.(*storage.Cloudinary)
+	if !ok {
+		return nil, errors.New("Cloudinary fallback requires a Cloudinary connection")
+	}
+	return backend.EnableDownloadFallback(limit)
+}

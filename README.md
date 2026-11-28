@@ -118,7 +118,7 @@ FreeSync stores queue metadata in the database selected by `freesync setup`. SQL
 
 FreeSync resumes queued operations when you remount the same storage connection using the same database. Let pending operations finish before switching databases. If the database becomes unavailable while recording a change, FreeSync keeps the local data. Restore the database connection and remount to reconcile the queue. A successful save means FreeSync accepted the local change. It can take longer for the upload to reach storage. If the remote file changes before a queued save commits, FreeSync keeps the local copy and prints its location. Pending files and conflicts live under `freesync/writes` in your OS configuration directory. Keep this directory while uploads are pending. FreeSync does not enable cloud versioning.
 
-File renames publish the destination before conditionally deleting the source. Both objects may be visible to other clients until the delete succeeds. Directory creation, rename, and deletion are outside this first writable implementation. A file can be busy while an upload is in progress. Opening an existing file for in-place editing or renaming it can require downloading the whole file. Saves and renames write file contents using the destination’s upload defaults. Custom object metadata and storage tiers may need to be reapplied. S3 saves currently use single-object uploads. [S3 upload limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/upload-objects.html)
+File renames publish the destination before conditionally deleting the source. Both objects may be visible to other clients until the delete succeeds. Writable direct mounts can create and remove empty directories using zero-byte objects with slash-terminated keys. Directory renames are unavailable on direct mounts. A file can be busy while an upload is in progress. Opening an existing file for in-place editing or renaming it can require downloading the whole file. Saves and renames write file contents using the destination’s upload defaults. Custom object metadata and storage tiers may need to be reapplied. S3 conditional saves use multipart uploads starting at 64 MiB. Configure an S3 lifecycle rule to abort incomplete multipart uploads left behind if a client exits before it can clean up. [S3 upload limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/upload-objects.html)
 
 ## Mount cache, refresh, and upload status
 
@@ -127,6 +127,8 @@ Set cache lifetimes when starting the mount:
 ```sh
 freesync storage mount --data-ttl 30s --metadata-ttl 10s
 ```
+
+For Cloudinary, add `--cloudinary-fallback-bytes 268435456` to allow a full download when the provider ignores a range request. The mount stores one complete asset revision at a time in a private temporary directory, bounded by the specified byte limit. The fallback is disabled by default. A normal unmount removes the temporary files.
 
 Both flags default to `0`, which disables reuse in the FreeSync cache. The data cache holds recently requested byte ranges up to 256 KiB each. The metadata cache holds directory listings and file metadata. These settings also work with `--write`.
 
@@ -153,6 +155,8 @@ freesync managed mount --drive team --email bob@example.com --write
 Bob must sign up before Alice invites him. FreeSync prompts for the password in the terminal. For read-only access, omit `--write` from both `invite` and `mount`. To revoke Bob's access, Alice runs `freesync managed revoke --drive team --email alice@example.com --member bob@example.com`.
 
 Email addresses identify accounts on this server. The server does not send email verification messages or invitations.
+
+Writable managed mounts can create and remove empty directories and rename directory trees to unused paths. A rename moves current files in a single metadata transaction. Retained versions stay at their original paths.
 
 The mount reports pending, committed, and conflicted saves in its terminal. If two users edit the same revision, the first commit becomes the current file and FreeSync prints the location of the other user's staged copy. Copy that staged file before resolving the conflict. The server checks revisions with file history off.
 

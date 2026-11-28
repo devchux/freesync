@@ -96,7 +96,11 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 	assertCurrent := func(c *managed.Client, want string) storage.FileInfo {
 		t.Helper()
 		entries, err := c.ReadDir(ctx, "")
-		if err != nil || len(entries) != 1 || entries[0].Name != "report.txt" {
+		found := false
+		for _, entry := range entries {
+			found = found || (entry.Name == "report.txt" && !entry.Directory)
+		}
+		if err != nil || !found {
 			t.Fatalf("listing = %+v, %v", entries, err)
 		}
 		file, err := c.Stat(ctx, "report.txt")
@@ -340,6 +344,39 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 		t.Fatalf("restore revision = %s, storage objects = %d", newRevision, len(contents))
 	}
 	assertVersion(alice, replacement.Revision)
+	if err := alice.MakeDirectory(ctx, "empty"); err != nil {
+		t.Fatal(err)
+	}
+	if err := alice.MakeDirectory(ctx, "empty/nested"); err != nil {
+		t.Fatal(err)
+	}
+	if err := alice.RemoveDirectory(ctx, "empty"); !errors.Is(err, storage.ErrDirectoryNotEmpty) {
+		t.Fatalf("remove populated directory: %v", err)
+	}
+	if err := alice.RenameDirectory(ctx, "empty", "renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := alice.RemoveDirectory(ctx, "renamed/nested"); err != nil {
+		t.Fatal(err)
+	}
+	if err := alice.CommitWrite(ctx, "rename-source/file.txt", "", "directory-test", false, strings.NewReader("contents")); err != nil {
+		t.Fatal(err)
+	}
+	beforeMove, err := alice.Stat(ctx, "rename-source/file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := alice.RenameDirectory(ctx, "rename-source", "rename-dest"); err != nil {
+		t.Fatal(err)
+	}
+	afterMove, err := alice.Stat(ctx, "rename-dest/file.txt")
+	if err != nil || afterMove.Revision != beforeMove.Revision {
+		t.Fatalf("moved file revision = %q, err = %v", afterMove.Revision, err)
+	}
+	if _, err := alice.Stat(ctx, "rename-source/file.txt"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("stat old path: %v", err)
+	}
+
 	backup := request(admin, http.MethodGet, "backup", nil)
 	target := testConfig("FREESYNC_TEST_RESTORE_DB", "restored.sqlite")
 	restoredContents := make(managedTestContents)
@@ -354,6 +391,9 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 	restoredAccount, restoredAlice := login(restored, aliceEmail)
 	if restoredAccount != aliceAccount {
 		t.Fatalf("restored owner mismatch: %+v", restoredAccount)
+	}
+	if err := restoredAlice.RemoveDirectory(ctx, "renamed"); err != nil {
+		t.Fatalf("remove restored empty directory: %v", err)
 	}
 	request(restoredAlice, http.MethodGet, "members", nil)
 	current := assertCurrent(restoredAlice, "Alice's edit")
@@ -372,7 +412,7 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 	assertVersion(restoredAlice, replacement.Revision)
 	setHistory(restoredAlice, `{"enabled":false}`)
 	assertHistory(restoredAlice, false, 0, 0)
-	if len(restoredContents) != 1 {
+	if len(restoredContents) != 2 {
 		t.Fatalf("disabling history left %d storage objects", len(restoredContents))
 	}
 
@@ -396,7 +436,7 @@ func TestManagedDriveConflictAndRestore(t *testing.T) {
 		t.Fatalf("restore of expired version: %v", err)
 	}
 	setHistory(alice, `{"enabled":true,"maxAgeDays":30,"maxVersions":1}`)
-	if len(contents) != 1 {
+	if len(contents) != 2 {
 		t.Fatalf("expiring history left %d storage objects", len(contents))
 	}
 

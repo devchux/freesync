@@ -32,7 +32,7 @@ func (f *filesystem) Unlink(name string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	entry, err := f.lookup(ctx, name)
+	entry, err := f.lookupFresh(ctx, name)
 	if err != nil {
 		return fileStatus(err)
 	}
@@ -57,7 +57,7 @@ func (f *filesystem) Rename(from, to string) int {
 	defer f.mutations.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	entry, err := f.lookup(ctx, from)
+	entry, err := f.lookupFresh(ctx, from)
 	if err != nil {
 		return fileStatus(err)
 	}
@@ -74,7 +74,7 @@ func (f *filesystem) Rename(from, to string) int {
 	if _, ok := f.queue.pending(destination); ok {
 		return -fuse.EBUSY
 	}
-	parent, err := f.lookup(ctx, path.Dir(to))
+	parent, err := f.lookupFresh(ctx, path.Dir(to))
 	if err != nil {
 		return fileStatus(err)
 	}
@@ -82,7 +82,7 @@ func (f *filesystem) Rename(from, to string) int {
 		return -fuse.ENOTDIR
 	}
 	var revision string
-	target, err := f.lookup(ctx, to)
+	target, err := f.lookupFresh(ctx, to)
 	switch {
 	case err == nil:
 		if target.Directory {

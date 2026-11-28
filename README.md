@@ -119,3 +119,17 @@ FreeSync stores queue metadata in the database selected by `freesync setup`. SQL
 FreeSync resumes queued operations when you remount the same storage connection using the same database. Let pending operations finish before switching databases. If the database becomes unavailable while recording a change, FreeSync keeps the local data. Restore the database connection and remount to reconcile the queue. A successful save means FreeSync accepted the local change. It can take longer for the upload to reach storage. If the remote file changes before a queued save commits, FreeSync keeps the local copy and prints its location. Pending files and conflicts live under `freesync/writes` in your OS configuration directory. Keep this directory while uploads are pending. FreeSync does not enable cloud versioning.
 
 File renames publish the destination before conditionally deleting the source. Both objects may be visible to other clients until the delete succeeds. Directory creation, rename, and deletion are outside this first writable implementation. A file can be busy while an upload is in progress. Opening an existing file for in-place editing or renaming it can require downloading the whole file. Saves and renames write file contents using the destination’s upload defaults. Custom object metadata and storage tiers may need to be reapplied. S3 saves currently use single-object uploads. [S3 upload limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/upload-objects.html)
+
+## Mount cache, refresh, and upload status
+
+Set cache lifetimes when starting the mount:
+
+```sh
+freesync storage mount --data-ttl 30s --metadata-ttl 10s
+```
+
+Both flags default to `0`, which disables reuse in the FreeSync cache. The data cache holds recently requested byte ranges up to 256 KiB each. The metadata cache holds directory listings and file metadata. These settings also work with `--write`.
+
+In the terminal running the mount, type `refresh` and press Enter to clear both caches. Refresh or reopen the directory in your file manager to fetch the current listing. Reopen an already open file to read a new remote revision.
+
+On writable mounts, the terminal reports uploads as pending, uploading, committed, conflicted, or pending retry. A committed message means the provider operation completed and FreeSync recorded completion. If an upload conflicts, the terminal also prints where the staged copy was retained.

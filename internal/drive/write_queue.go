@@ -45,6 +45,7 @@ type writeJob struct {
 }
 
 type writeQueue struct {
+	invalidate func()
 	dir        string
 	journal    *service.WriteJournal
 	journalErr error
@@ -280,6 +281,15 @@ func (q *writeQueue) removeBody(job writeJob) {
 }
 
 func (q *writeQueue) run(ctx context.Context) {
+	q.mu.Lock()
+	for _, job := range q.jobs {
+		state := "pending"
+		if job.Blocked {
+			state = "blocked"
+		}
+		q.report(job, state)
+	}
+	q.mu.Unlock()
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -335,6 +345,7 @@ func (q *writeQueue) process(ctx context.Context, id string) error {
 			return err
 		}
 	}
+	q.report(job, "uploading")
 	q.mu.Unlock()
 
 	// Permit large transfers on slower links without extending delete timeouts.
@@ -342,16 +353,28 @@ func (q *writeQueue) process(ctx context.Context, id string) error {
 	request, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	err := q.apply(request, job, replay)
+	if q.invalidate != nil {
+		q.invalidate()
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	switch {
 	case err == nil:
-		return q.complete(job)
+		if err := q.complete(job); err != nil {
+			return err
+		}
+		q.report(job, "committed")
+		return nil
 	case errors.Is(err, storage.ErrFileChanged), errors.Is(err, storage.ErrUploadTooLarge):
 		job.Blocked = true
 		if persistErr := q.record(job); persistErr != nil {
 			return errors.Join(err, persistErr)
 		}
+		state := "blocked"
+		if errors.Is(err, storage.ErrFileChanged) {
+			state = "conflicted"
+		}
+		q.report(job, state)
 		if job.Body != "" {
 			return fmt.Errorf("%q could not be committed. Local copy retained at %s: %w", job.Key, filepath.Join(q.dir, job.Body), err)
 		}
@@ -365,6 +388,7 @@ func (q *writeQueue) process(ctx context.Context, id string) error {
 				return errors.Join(err, persistErr)
 			}
 		}
+		q.report(job, "pending retry")
 		return fmt.Errorf("%q will be retried: %w", job.Key, err)
 	}
 }
@@ -392,4 +416,10 @@ func (q *writeQueue) apply(ctx context.Context, job writeJob, replay bool) error
 		return q.remote.CommitDelete(ctx, job.Source, job.SourceRevision)
 	}
 	return nil
+}
+
+func (q *writeQueue) report(job writeJob, state string) {
+	if job.Body != "" && q.invalidate != nil {
+		log.Printf("FreeSync upload %s %q: %s", job.ID, job.Key, state)
+	}
 }

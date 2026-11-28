@@ -7,9 +7,8 @@ import (
 	"runtime"
 
 	"github.com/devchux/freesync/internal/cache"
-	"github.com/devchux/freesync/internal/service"
 )
 
-func Mount(_ *service.Storage, _ *WriteConfig, _ cache.Config) error {
+func Mount(_ MountStorage, _ *WriteConfig, _ cache.Config) error {
 	return fmt.Errorf("mounting is unavailable in this %s build. See the FreeSync README for platform-specific build instructions", runtime.GOOS)
 }

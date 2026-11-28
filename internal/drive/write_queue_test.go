@@ -189,6 +189,16 @@ func TestWriteQueueKeepsConflictingEditLocal(t *testing.T) {
 	}
 }
 
+func TestFreshManagedSpool(t *testing.T) {
+	dir := t.TempDir()
+	config := database.Config{Type: database.SQLite, Address: filepath.Join(dir, "queue.sqlite")}
+	queue, err := openWriteQueue(dir, &testRemote{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer queue.close()
+}
+
 func TestImportPreviousLocalJournal(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

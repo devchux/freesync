@@ -170,6 +170,7 @@ func (q *writeQueue) save(key, revision, previous string, file *os.File) (string
 	if exists {
 		q.removeBody(job)
 	}
+	q.report(newJob, "pending")
 	return newJob.ID, nil
 }
 
@@ -365,7 +366,7 @@ func (q *writeQueue) process(ctx context.Context, id string) error {
 		}
 		q.report(job, "committed")
 		return nil
-	case errors.Is(err, storage.ErrFileChanged), errors.Is(err, storage.ErrUploadTooLarge):
+	case errors.Is(err, storage.ErrFileChanged), errors.Is(err, storage.ErrUploadTooLarge), errors.Is(err, fs.ErrPermission):
 		job.Blocked = true
 		if persistErr := q.record(job); persistErr != nil {
 			return errors.Join(err, persistErr)

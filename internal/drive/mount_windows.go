@@ -7,11 +7,10 @@ import (
 	"fmt"
 
 	"github.com/devchux/freesync/internal/cache"
-	"github.com/devchux/freesync/internal/service"
 	"golang.org/x/sys/windows"
 )
 
-func Mount(store *service.Storage, writes *WriteConfig, cacheConfig cache.Config) error {
+func Mount(store MountStorage, writes *WriteConfig, cacheConfig cache.Config) error {
 	drives, err := windows.GetLogicalDrives()
 	if err != nil {
 		return fmt.Errorf("find an available drive letter: %w", err)

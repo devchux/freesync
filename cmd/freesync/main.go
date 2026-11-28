@@ -27,7 +27,7 @@ func start(cfg settings, port int, interval time.Duration, save func() error) er
 }
 
 const (
-	usage           = "Usage: freesync [setup | storage setup | storage list | storage mount [--write] [--data-ttl DURATION] [--metadata-ttl DURATION] | daemon --folder PATH [--db-type TYPE] [--db ADDRESS]]"
+	usage           = "Usage: freesync [setup | storage setup | storage list | storage mount [--write] [--data-ttl DURATION] [--metadata-ttl DURATION] | managed COMMAND | daemon --folder PATH [--db-type TYPE] [--db ADDRESS]]"
 	defaultPort     = 8384
 	defaultInterval = 30 * time.Second
 )
@@ -43,6 +43,8 @@ func run(args []string) error {
 		return nil
 	case len(args) >= 2 && args[0] == "storage":
 		return runStorage(args[1], args[2:])
+	case args[0] == "managed":
+		return runManaged(args[1:])
 	case args[0] == "daemon":
 		return runDaemon(args[1:])
 	default:

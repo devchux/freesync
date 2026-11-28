@@ -12,10 +12,9 @@ import (
 	"runtime"
 
 	"github.com/devchux/freesync/internal/cache"
-	"github.com/devchux/freesync/internal/service"
 )
 
-func Mount(store *service.Storage, writes *WriteConfig, cacheConfig cache.Config) error {
+func Mount(store MountStorage, writes *WriteConfig, cacheConfig cache.Config) error {
 	location, err := mountDirectory()
 	if err != nil {
 		return err

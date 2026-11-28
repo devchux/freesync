@@ -133,3 +133,39 @@ Both flags default to `0`, which disables reuse in the FreeSync cache. The data 
 In the terminal running the mount, type `refresh` and press Enter to clear both caches. Refresh or reopen the directory in your file manager to fetch the current listing. Reopen an already open file to read a new remote revision.
 
 On writable mounts, the terminal reports uploads as pending, uploading, committed, conflicted, or pending retry. A committed message means the provider operation completed and FreeSync recorded completion. If an upload conflicts, the terminal also prints where the staged copy was retained.
+
+## Self-host a managed drive
+
+A FreeSync server provides per-drive sharing and revision checks. It stores metadata and permissions in SQLite, PostgreSQL, or MySQL and uses the existing storage service for file contents. Run one server per managed database and configure a dedicated bucket, container, or storage root with `freesync storage setup`. The server stores internal objects under `.freesync-managed/`.
+
+Run `freesync managed serve`. SQLite is the default. To use PostgreSQL or MySQL, pass `--db-type postgres` or `--db-type mysql` and `--db CONNECTION_STRING` to `serve` and `restore`. The server listens on loopback by default. To connect from other computers, put it behind an HTTPS reverse proxy that preserves the public Host header and pass `--server https://drive.example.com` to client commands.
+
+Users sign up with a full name, email address, and password. The account that creates a drive owns it and can invite registered users, set their read or write access, and revoke access. An invitee signs in to accept the invitation.
+
+```sh
+freesync managed signup --name "Alice Owner" --email alice@example.com
+freesync managed create --drive team --email alice@example.com
+freesync managed invite --drive team --email alice@example.com --member bob@example.com --write
+freesync managed accept --drive team --email bob@example.com
+freesync managed mount --drive team --email bob@example.com --write
+```
+
+Bob must sign up before Alice invites him. FreeSync prompts for the password in the terminal. For read-only access, omit `--write` from both `invite` and `mount`. To revoke Bob's access, Alice runs `freesync managed revoke --drive team --email alice@example.com --member bob@example.com`.
+
+Email addresses identify accounts on this server. The server does not send email verification messages or invitations.
+
+The mount reports pending, committed, and conflicted saves in its terminal. If two users edit the same revision, the first commit becomes the current file and FreeSync prints the location of the other user's staged copy. Copy that staged file before resolving the conflict. The server checks revisions with file history off.
+
+### Browser API
+
+Serve the web client and API from the same HTTPS origin. Send JSON to `POST /auth/signup` with `fullName`, `email`, and `password`, then to `POST /auth/login` with `email` and `password`. Login sets an HTTP-only session cookie. Use `GET /auth/me` to load the signed-in account and `POST /auth/logout` to end the session.
+
+`GET /drives` lists owned drives, accepted access, and pending invitations for the account. Use `POST /drives/{drive}/create` to create a drive, `POST /drives/{drive}/accept` to accept an invitation, and `GET /drives/{drive}/members` to list its members as the owner. The owner can call `POST /drives/{drive}/invite?email=...&write=true` and `POST /drives/{drive}/revoke?email=...`.
+
+### Export and recovery
+
+A member can run `freesync managed export --drive team --email bob@example.com --file team.tar` to download a tar archive of ordinary files. Configure the same random `FREESYNC_MANAGED_ADMIN_TOKEN` of at least 32 characters on the server and administrative client to enable backup and legacy ownership recovery. An administrator can run `freesync managed backup --file server.tar` to save all drives, current file contents, and managed-drive metadata, including accounts, password hashes, ownership, permissions, and invitations. Users sign in again after restore. The backup format works across all three database engines. The server protects the snapshot against concurrent writes while streaming it.
+
+On a fresh server, configure an empty storage backend and run `freesync managed restore --db /path/to/managed.sqlite --file server.tar` with a database that has no managed drives or accounts. For PostgreSQL and MySQL, create the database first and pass its connection string instead of a file path. Start the server with `freesync managed serve --db /path/to/managed.sqlite` and its configured admin token. Member email addresses and passwords continue working with the restored database. Preserve client spool files separately if they contain pending or conflicted edits.
+
+For a drive created before account ownership, first register the intended owner and run `freesync managed claim --drive team --email alice@example.com` as the server administrator. The new owner can invite members through their accounts.

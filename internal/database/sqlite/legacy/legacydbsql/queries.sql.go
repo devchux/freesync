@@ -9,6 +9,17 @@ import (
 	"context"
 )
 
+const hasLegacyWriteJobsTable = `-- name: HasLegacyWriteJobsTable :one
+SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'writes')
+`
+
+func (q *Queries) HasLegacyWriteJobsTable(ctx context.Context) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasLegacyWriteJobsTable)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listLegacyWriteJobs = `-- name: ListLegacyWriteJobs :many
 SELECT id, job FROM writes
 `

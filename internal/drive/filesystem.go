@@ -54,7 +54,7 @@ type filesystem struct {
 	stopWrites  func()
 }
 
-func mount(store *service.Storage, location, options, runtimeName string, writes *WriteConfig, cacheConfig cache.Config) (err error) {
+func mount(store MountStorage, location, options, runtimeName string, writes *WriteConfig, cacheConfig cache.Config) (err error) {
 	files := &filesystem{store: store, open: make(map[uint64]*openFile), writers: make(map[string]*openFile)}
 	files.directories = cache.New[string, []service.DriveEntry](cacheConfig.MetadataTTL, 64)
 	files.metadata = cache.New[string, storage.FileInfo](cacheConfig.MetadataTTL, 1024)
@@ -62,12 +62,15 @@ func mount(store *service.Storage, location, options, runtimeName string, writes
 	if runtime.GOOS == "windows" {
 		options += ",FileInfoTimeout=0,DirInfoTimeout=0"
 	} else {
-		options += ",attr_timeout=0,entry_timeout=0,negative_timeout=0,direct_io"
+		options += ",attr_timeout=0,entry_timeout=0,negative_timeout=0"
+		if runtime.GOOS != "linux" {
+			options += ",direct_io"
+		}
 	}
 	mode := "read-only"
 	if writes != nil {
 		if !store.WritableMount() {
-			return errors.New("writable mounting is available for S3 and Azure Blob")
+			return errors.New("this storage does not support writable mounting")
 		}
 		queue, err := openWriteQueue(writes.SpoolDir, store, writes.Database)
 		if err != nil {
@@ -89,6 +92,9 @@ func mount(store *service.Storage, location, options, runtimeName string, writes
 		options = "ro," + options
 	}
 	host := fuse.NewFileSystemHost(files)
+	if runtime.GOOS == "linux" {
+		host.SetDirectIO(true)
+	}
 	if files.queue != nil {
 		host.SetCapOpenTrunc(true)
 	}
@@ -160,6 +166,8 @@ func fileStatus(err error) int {
 		return 0
 	case errors.Is(err, errWritePending):
 		return -fuse.EBUSY
+	case errors.Is(err, fs.ErrPermission):
+		return -fuse.EACCES
 	case errors.Is(err, fs.ErrNotExist):
 		return -fuse.ENOENT
 	case runtime.GOOS != "windows" && errors.Is(err, storage.ErrFileChanged):

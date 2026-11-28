@@ -62,7 +62,10 @@ func mount(store MountStorage, location, options, runtimeName string, writes *Wr
 	if runtime.GOOS == "windows" {
 		options += ",FileInfoTimeout=0,DirInfoTimeout=0"
 	} else {
-		options += ",attr_timeout=0,entry_timeout=0,negative_timeout=0,direct_io"
+		options += ",attr_timeout=0,entry_timeout=0,negative_timeout=0"
+		if runtime.GOOS != "linux" {
+			options += ",direct_io"
+		}
 	}
 	mode := "read-only"
 	if writes != nil {
@@ -89,6 +92,9 @@ func mount(store MountStorage, location, options, runtimeName string, writes *Wr
 		options = "ro," + options
 	}
 	host := fuse.NewFileSystemHost(files)
+	if runtime.GOOS == "linux" {
+		host.SetDirectIO(true)
+	}
 	if files.queue != nil {
 		host.SetCapOpenTrunc(true)
 	}

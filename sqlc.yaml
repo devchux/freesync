@@ -46,3 +46,4 @@ sql:
       go:
         package: legacydbsql
         out: internal/database/sqlite/legacy/legacydbsql
+        omit_unused_structs: true

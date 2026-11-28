@@ -120,7 +120,15 @@ func LegacyWriteRecords(ctx context.Context, path string) ([]WriteRecord, error)
 		return nil, err
 	}
 	defer db.Close()
-	rows, err := legacydbsql.New(db).ListLegacyWriteJobs(ctx)
+	queries := legacydbsql.New(db)
+	hasLegacyTable, err := queries.HasLegacyWriteJobsTable(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("inspect previous write journal: %w", err)
+	}
+	if !hasLegacyTable {
+		return nil, nil
+	}
+	rows, err := queries.ListLegacyWriteJobs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read previous write journal: %w", err)
 	}

@@ -126,7 +126,7 @@ func (s *Server) manageMembers(w http.ResponseWriter, r *http.Request, drive, ow
 		writeJSON(w, http.StatusOK, members)
 		return nil
 	}
-	if r.Method != http.MethodPost || (action != "invite" && action != "revoke") {
+	if r.Method != http.MethodPost || (action != "invite" && action != "grant" && action != "revoke") {
 		w.WriteHeader(http.StatusNotFound)
 		return nil
 	}
@@ -141,6 +141,21 @@ func (s *Server) manageMembers(w http.ResponseWriter, r *http.Request, drive, ow
 		return queries.DeleteManagedGrant(ctx, drive, id)
 	}
 	writable := permission(r.URL.Query().Get("write") == "true")
+	if action == "grant" {
+		tx, err := s.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		q := database.NewManagedQueries(tx, s.DatabaseType)
+		if err := q.DeleteManagedGrant(ctx, drive, id); err != nil {
+			return err
+		}
+		if err := q.InsertManagedGrant(ctx, drive, id, 0, writable); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
 	_, err = queries.ManagedGrantByAccount(ctx, drive, id)
 	if err == nil {
 		return queries.UpdateManagedGrantAccess(ctx, writable, drive, id)

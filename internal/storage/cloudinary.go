@@ -18,7 +18,8 @@ import (
 
 // Cloudinary stores files as authenticated raw assets, using keys as public IDs.
 type Cloudinary struct {
-	client *cloudinary.Cloudinary
+	client   *cloudinary.Cloudinary
+	fallback *cloudinaryFallback
 }
 
 // NewCloudinary configures access to a Cloudinary product environment.

@@ -237,7 +237,8 @@ func managedServer(action string, flags *flag.FlagSet, args []string) error {
 		return err
 	}
 	defer db.Close()
-	handler := route.Managed(&managed.Server{DB: db, DatabaseType: backend, Contents: contents, AdminToken: token})
+	managedServer := &managed.Server{DB: db, DatabaseType: backend, Contents: contents, AdminToken: token}
+	handler := route.Managed(managedServer)
 	server := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
@@ -245,6 +246,16 @@ func managedServer(action string, flags *flag.FlagSet, args []string) error {
 	}
 	defer listener.Close()
 	fmt.Fprintf(os.Stderr, "Serving managed drives on %s\n", listener.Addr())
+	maintenanceCtx, cancelMaintenance := context.WithCancel(ctx)
+	maintenanceDone := make(chan struct{})
+	go func() {
+		defer close(maintenanceDone)
+		managedServer.MaintainHistory(maintenanceCtx)
+	}()
+	defer func() {
+		cancelMaintenance()
+		<-maintenanceDone
+	}()
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	select {

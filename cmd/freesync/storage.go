@@ -30,16 +30,18 @@ type storageSettings struct {
 func runStorage(action string, args []string) error {
 	var cacheConfig cache.Config
 	var writable bool
+	var cloudinaryFallback int64
 	switch action {
 	case "mount":
 		flags := flag.NewFlagSet("storage mount", flag.ContinueOnError)
+		flags.Int64Var(&cloudinaryFallback, "cloudinary-fallback-bytes", 0, "maximum bytes for Cloudinary full-download fallback")
 		flags.BoolVar(&writable, "write", false, "enable queued writes where supported")
 		flags.DurationVar(&cacheConfig.DataTTL, "data-ttl", 0, "file data cache lifetime")
 		flags.DurationVar(&cacheConfig.MetadataTTL, "metadata-ttl", 0, "directory listing and file metadata cache lifetime")
 		if err := flags.Parse(args); err != nil {
 			return err
 		}
-		if flags.NArg() != 0 || cacheConfig.DataTTL < 0 || cacheConfig.MetadataTTL < 0 {
+		if flags.NArg() != 0 || cloudinaryFallback < 0 || cacheConfig.DataTTL < 0 || cacheConfig.MetadataTTL < 0 {
 			return errors.New("mount flags require non-negative cache durations and no positional arguments")
 		}
 	case "setup", "list":
@@ -79,6 +81,13 @@ func runStorage(action string, args []string) error {
 		return err
 	}
 	if action == "mount" {
+		if cloudinaryFallback > 0 {
+			cleanup, err := store.EnableCloudinaryFallback(cloudinaryFallback)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+		}
 		var writeConfig *drive.WriteConfig
 		if writable {
 			dbConfig, err := mountDatabaseConfig(settingsFile)

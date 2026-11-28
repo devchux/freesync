@@ -190,6 +190,13 @@ func (c *Cloudinary) ReadRange(ctx context.Context, file FileInfo, offset int64,
 	if err != nil || version <= 0 {
 		return 0, errors.New("Cloudinary asset version is required for random access")
 	}
+	if c.fallback != nil {
+		c.fallback.mu.Lock()
+		defer c.fallback.mu.Unlock()
+		if c.fallback.file != nil && c.fallback.info.Key == file.Key && c.fallback.info.Revision == file.Revision && c.fallback.info.Size == file.Size {
+			return c.fallback.file.ReadAt(buffer, offset)
+		}
+	}
 	asset, err := c.client.File(file.Key)
 	if err != nil {
 		return 0, err
@@ -217,6 +224,9 @@ func (c *Cloudinary) ReadRange(ctx context.Context, file FileInfo, offset int64,
 		return 0, fmt.Errorf("read Cloudinary object %q: %w", file.Key, err)
 	}
 	if res.StatusCode == http.StatusOK {
+		if c.fallback != nil {
+			return c.fallback.readFull(res, file, offset, buffer)
+		}
 		res.Body.Close()
 		return 0, ErrRangeUnsupported
 	}

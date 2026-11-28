@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/devchux/freesync/internal/database"
 	"github.com/devchux/freesync/internal/service"
@@ -42,6 +43,10 @@ func (s *Server) archive(w http.ResponseWriter, ctx context.Context, drive strin
 			return err
 		}
 		for _, object := range objects {
+			if strings.HasSuffix(object.Key, "/") {
+				files = append(files, storage.FileInfo{Object: object})
+				continue
+			}
 			file, err := s.stat(ctx, drive, object.Key)
 			if err != nil {
 				return err
@@ -59,25 +64,23 @@ func (s *Server) archive(w http.ResponseWriter, ctx context.Context, drive strin
 			return err
 		}
 	}
-	buffer := make([]byte, 1<<20)
 	for _, file := range files {
 		name := file.Key
+		if !backup && strings.HasSuffix(name, "/") {
+			if err := archive.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeDir, Mode: 0700, ModTime: file.LastModified}); err != nil {
+				return err
+			}
+			continue
+		}
 		if backup {
 			name = "objects/" + file.Revision
 		}
 		if err := archive.WriteHeader(&tar.Header{Name: name, Size: file.Size, Mode: 0600, ModTime: file.LastModified}); err != nil {
 			return err
 		}
-		for offset := int64(0); offset < file.Size; {
-			chunk := buffer[:min(int64(len(buffer)), file.Size-offset)]
-			if err := s.read(ctx, file.Revision, offset, chunk); err != nil {
-				// Interrupt the HTTP stream so clients cannot mistake a partial archive for success.
-				panic(http.ErrAbortHandler)
-			}
-			if _, err := archive.Write(chunk); err != nil {
-				return err
-			}
-			offset += int64(len(chunk))
+		if err := s.copyRevision(ctx, archive, file.Revision, file.Size); err != nil {
+			// Interrupt the HTTP stream so clients cannot mistake a partial archive for success.
+			panic(http.ErrAbortHandler)
 		}
 	}
 	return archive.Close()
@@ -157,7 +160,7 @@ func archiveMetadata(ctx context.Context, archive *tar.Reader, dir string) (meta
 		if err := json.NewDecoder(archive).Decode(&meta); err != nil {
 			return metadata{}, err
 		}
-		if meta.Version != 1 && meta.Version != 2 {
+		if meta.Version < 1 || meta.Version > 3 {
 			return metadata{}, fmt.Errorf("unsupported backup version %d", meta.Version)
 		}
 		return meta, nil

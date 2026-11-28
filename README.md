@@ -118,7 +118,7 @@ FreeSync stores queue metadata in the database selected by `freesync setup`. SQL
 
 FreeSync resumes queued operations when you remount the same storage connection using the same database. Let pending operations finish before switching databases. If the database becomes unavailable while recording a change, FreeSync keeps the local data. Restore the database connection and remount to reconcile the queue. A successful save means FreeSync accepted the local change. It can take longer for the upload to reach storage. If the remote file changes before a queued save commits, FreeSync keeps the local copy and prints its location. Pending files and conflicts live under `freesync/writes` in your OS configuration directory. Keep this directory while uploads are pending. FreeSync does not enable cloud versioning.
 
-File renames publish the destination before conditionally deleting the source. Both objects may be visible to other clients until the delete succeeds. Directory creation, rename, and deletion are outside this first writable implementation. A file can be busy while an upload is in progress. Opening an existing file for in-place editing or renaming it can require downloading the whole file. Saves and renames write file contents using the destination’s upload defaults. Custom object metadata and storage tiers may need to be reapplied. S3 saves currently use single-object uploads. [S3 upload limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/upload-objects.html)
+File renames publish the destination before conditionally deleting the source. Both objects may be visible to other clients until the delete succeeds. Writable direct mounts can create and remove empty directories using zero-byte objects with slash-terminated keys. Directory renames are unavailable on direct mounts. A file can be busy while an upload is in progress. Opening an existing file for in-place editing or renaming it can require downloading the whole file. Saves and renames write file contents using the destination’s upload defaults. Custom object metadata and storage tiers may need to be reapplied. S3 conditional saves use multipart uploads starting at 64 MiB. Configure an S3 lifecycle rule to abort incomplete multipart uploads left behind if a client exits before it can clean up. [S3 upload limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/upload-objects.html)
 
 ## Mount cache, refresh, and upload status
 
@@ -127,6 +127,8 @@ Set cache lifetimes when starting the mount:
 ```sh
 freesync storage mount --data-ttl 30s --metadata-ttl 10s
 ```
+
+For Cloudinary, add `--cloudinary-fallback-bytes 268435456` to allow a full download when the provider ignores a range request. The mount stores one complete asset revision at a time in a private temporary directory, bounded by the specified byte limit. The fallback is disabled by default. A normal unmount removes the temporary files.
 
 Both flags default to `0`, which disables reuse in the FreeSync cache. The data cache holds recently requested byte ranges up to 256 KiB each. The metadata cache holds directory listings and file metadata. These settings also work with `--write`.
 
@@ -154,13 +156,25 @@ Bob must sign up before Alice invites him. FreeSync prompts for the password in 
 
 Email addresses identify accounts on this server. The server does not send email verification messages or invitations.
 
+Writable managed mounts can create and remove empty directories and rename directory trees to unused paths. A rename moves current files in a single metadata transaction. Retained versions stay at their original paths.
+
 The mount reports pending, committed, and conflicted saves in its terminal. If two users edit the same revision, the first commit becomes the current file and FreeSync prints the location of the other user's staged copy. Copy that staged file before resolving the conflict. The server checks revisions with file history off.
 
 ### Browser API
 
 Serve the web client and API from the same HTTPS origin. Send JSON to `POST /auth/signup` with `fullName`, `email`, and `password`, then to `POST /auth/login` with `email` and `password`. Login sets an HTTP-only session cookie. Use `GET /auth/me` to load the signed-in account and `POST /auth/logout` to end the session.
 
-`GET /drives` lists owned drives, accepted access, and pending invitations for the account. Use `POST /drives/{drive}/create` to create a drive, `POST /drives/{drive}/accept` to accept an invitation, and `GET /drives/{drive}/members` to list its members as the owner. The owner can call `POST /drives/{drive}/invite?email=...&write=true` and `POST /drives/{drive}/revoke?email=...`.
+`GET /drives` lists owned drives, accepted access, and pending invitations for the account. Use `POST /drives/{drive}/create` to create a drive, `POST /drives/{drive}/accept` to accept an invitation, and `GET /drives/{drive}/members` to list its members as the owner. The owner can invite with `POST /drives/{drive}/invite?email=...&write=true`, grant immediate access with `POST /drives/{drive}/grant?email=...&write=true`, and remove access or a pending invitation with `POST /drives/{drive}/revoke?email=...`. Omit `write=true` for read-only access.
+
+### Optional file history
+
+History starts off for every managed drive. Owners can enable it with `PUT /drives/{drive}/history` and a JSON body such as `{"enabled":true,"maxAgeDays":30,"maxVersions":5}`. Both limits must be positive. Age starts when a file revision is replaced or deleted. The version limit applies per path and counts superseded revisions. To disable history and release all retained versions, send `{"enabled":false}`.
+
+- Owners can call `GET /drives/{drive}/history` to read settings, `retainedVersions`, and `retainedBytes`. The byte count is the logical size of the retained objects. Provider versioning, soft delete, and retention policies can keep deleted data billable.
+- Accepted members can call `GET /drives/{drive}/versions?path=report.txt` for retained revisions, newest first. Deleted paths can still have retained revisions.
+- Members with write access can call `POST /drives/{drive}/restore?path=report.txt&version=RETAINED&revision=CURRENT`. Pass the current revision to avoid overwriting a concurrent edit, or omit `revision` to restore a deleted path. A successful restore creates a new revision. A stale current revision returns HTTP 409.
+
+FreeSync expires old versions in the background and retries failed storage deletions. Managed backups include the history settings and retained contents. Member exports contain current files.
 
 ### Export and recovery
 

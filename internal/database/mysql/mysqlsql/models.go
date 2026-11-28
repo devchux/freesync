@@ -51,6 +51,12 @@ type ManagedGrant struct {
 	Writable  int32
 }
 
+type ManagedHistorySetting struct {
+	Drive       []byte
+	MaxAgeDays  int64
+	MaxVersions int64
+}
+
 type ManagedMember struct {
 	Drive      []byte
 	Name       []byte
@@ -64,10 +70,23 @@ type ManagedOwner struct {
 	AccountID []byte
 }
 
+type ManagedReclaim struct {
+	Revision []byte
+}
+
 type ManagedSession struct {
 	TokenHash []byte
 	AccountID []byte
 	Expires   int64
+}
+
+type ManagedVersion struct {
+	Drive    []byte
+	Path     []byte
+	Revision []byte
+	Size     int64
+	Modified int64
+	Retired  int64
 }
 
 type WriteQueueJob struct {
